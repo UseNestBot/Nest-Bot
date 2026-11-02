@@ -176,7 +176,7 @@ Copy [`nest.config.example.json`](nest.config.example.json) to `%APPDATA%\Nest\n
 | `transferBudgetChars` | Max characters carried across providers and handoffs |
 | `defaultWorkspace` | Default working folder, `null` for `Documents\Nest` |
 
-Everything else is in **Settings**.
+Any other setting key (see `AppSettings` in `src/shared/types.ts`) works too, such as `theme`, `accentColor`, `uiScale` or `defaultModels`. Each value is checked the same way the Settings screen checks it; an invalid one is ignored and logged. Everything is also in **Settings**.
 
 </details>
 

@@ -411,7 +411,7 @@ export class NestTools {
           avatar: { shape: AVATAR_SHAPES[seed % AVATAR_SHAPES.length], color: AVATAR_PALETTE[seed % AVATAR_PALETTE.length], eyes: (['dots', 'happy', 'wide', 'sleepy'] as const)[seed % 4] },
           instructions,
           provider,
-          model: str('model', 120) || null,
+          model: str('model', 120) || this.db.getSettings().defaultModels[provider] || null,
           workspace: null,
           projectId: project?.id ?? null,
           pinned: false,

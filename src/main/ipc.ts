@@ -3,8 +3,8 @@ import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { API_METHODS, type ApiMethod, type NestApi } from '@shared/ipc';
-import type { AgentDraft, AppSettings, Attachment, ConversationDetail, NestEvent, PermissionSettings, ProjectDraft, ProviderId } from '@shared/types';
-import { API_PROVIDERS, DEFAULT_PERMISSIONS, PROVIDERS, isProviderId, type ApiProviderId } from '@shared/types';
+import type { AgentDraft, AppSettings, BackupInfo, Attachment, ConversationDetail, NestEvent, ProjectDraft, ProviderId } from '@shared/types';
+import { API_PROVIDERS, PROVIDERS, isProviderId, type ApiProviderId } from '@shared/types';
 import type { ApiKeyStore } from './apiKeys';
 import type { NestDb } from './db';
 import type { ProviderRegistry, RunManager } from './runs';
@@ -14,7 +14,7 @@ import { sanitizeAccess, type ConnectorService } from './connectors';
 import type { ModelStore } from './models';
 import type { Updater } from './updater';
 import type { RemoteHost } from './remote/host';
-import { DICTATION_MODELS } from '@shared/dictation';
+import { sanitizePermissions, sanitizeSettings } from './settings';
 import { UserFacingError } from './runs';
 
 export type Handlers = { [K in ApiMethod]: (...args: Parameters<NestApi[K]>) => ReturnType<NestApi[K]> | Awaited<ReturnType<NestApi[K]>> };
@@ -74,17 +74,6 @@ function folderName(name: string): string {
 }
 
 /** Only conservative modes are accepted; bypass/full-access modes are never forwarded. */
-function sanitizePermissions(p: PermissionSettings | undefined): PermissionSettings {
-  const perms = p ?? DEFAULT_PERMISSIONS;
-  return {
-    claudeMode: ['default', 'acceptEdits', 'plan'].includes(perms.claudeMode) ? perms.claudeMode : 'default',
-    codexSandbox: ['read-only', 'workspace-write'].includes(perms.codexSandbox) ? perms.codexSandbox : 'workspace-write',
-    codexApproval: ['on-request', 'untrusted'].includes(perms.codexApproval) ? perms.codexApproval : 'on-request',
-    // Stored as chosen (true, false, or absent = inherit); applied at run time against Settings.
-    ...(typeof perms.skipPermissions === 'boolean' ? { skipPermissions: perms.skipPermissions } : {}),
-  };
-}
-
 function sanitizeAttachments(list: Attachment[]): Attachment[] {
   if (!Array.isArray(list)) return [];
   return list.slice(0, 20).map((a) => {
@@ -106,7 +95,9 @@ export function createHandlers(deps: {
   browser?: AgentBrowserHost;
   defaultWorkspace: () => string;
   broadcast: (event: NestEvent) => void;
-  onSettingsChanged: (s: AppSettings) => void;
+  /** `changed`: the keys the patch actually set. */
+  onSettingsChanged: (s: AppSettings, changed: Array<keyof AppSettings>) => void;
+  backups: { list: () => BackupInfo[]; create: () => boolean };
   apiKeys: ApiKeyStore;
   updater: Updater;
   remote: RemoteHost;
@@ -361,38 +352,15 @@ export function createHandlers(deps: {
       }
     },
     updateSettings: (patch) => {
-      const clean: Partial<AppSettings> = {};
-      if (patch.claudePath !== undefined) clean.claudePath = patch.claudePath ? assertString(patch.claudePath, 'Path', 1000) : null;
-      for (const k of ['cursorPath', 'geminiPath', 'grokPath'] as const) {
-        if (patch[k] !== undefined) clean[k] = patch[k] ? assertString(patch[k], 'Path', 1000) : null;
-      }
-      if (patch.codexPath !== undefined) clean.codexPath = patch.codexPath ? assertString(patch.codexPath, 'Path', 1000) : null;
-      if (patch.allowSkipPermissions !== undefined) clean.allowSkipPermissions = Boolean(patch.allowSkipPermissions);
-      if (patch.skipPermissionsByDefault !== undefined) clean.skipPermissionsByDefault = Boolean(patch.skipPermissionsByDefault);
-      if (patch.allowApiKeyBilling !== undefined) clean.allowApiKeyBilling = Boolean(patch.allowApiKeyBilling);
-      if (patch.transferBudgetChars !== undefined) clean.transferBudgetChars = Math.min(40000, Math.max(1000, Number(patch.transferBudgetChars) || 8000));
-      if (patch.defaultWorkspace !== undefined) {
-        const w = patch.defaultWorkspace ? assertString(patch.defaultWorkspace, 'Folder', 1000) : null;
-        if (w && !path.isAbsolute(w)) throw new UserFacingError('Choose an absolute folder path.');
-        clean.defaultWorkspace = w;
-      }
-      if (patch.defaultProvider !== undefined) clean.defaultProvider = assertProvider(patch.defaultProvider);
-      if (patch.agentTools !== undefined) clean.agentTools = Boolean(patch.agentTools);
-      if (patch.notifyWhenUnfocused !== undefined) clean.notifyWhenUnfocused = Boolean(patch.notifyWhenUnfocused);
-      if (patch.theme !== undefined) clean.theme = patch.theme === 'light' || patch.theme === 'dark' ? patch.theme : 'system';
-      if (patch.textSize !== undefined) clean.textSize = patch.textSize === 'small' || patch.textSize === 'large' ? patch.textSize : 'default';
-      if (patch.chatWidth !== undefined) clean.chatWidth = patch.chatWidth === 'narrow' || patch.chatWidth === 'wide' ? patch.chatWidth : 'default';
-      if (patch.sendKey !== undefined) clean.sendKey = patch.sendKey === 'ctrl-enter' ? 'ctrl-enter' : 'enter';
-      if (patch.expandActivity !== undefined) clean.expandActivity = Boolean(patch.expandActivity);
-      if (patch.showUsage !== undefined) clean.showUsage = Boolean(patch.showUsage);
-      if (patch.dictationModel !== undefined) {
-        if (!DICTATION_MODELS.some((m) => m.id === patch.dictationModel)) throw new UserFacingError('Unknown dictation model');
-        clean.dictationModel = patch.dictationModel;
-      }
-      if (patch.defaultPermissions !== undefined) clean.defaultPermissions = sanitizePermissions(patch.defaultPermissions);
+      const clean = sanitizeSettings(patch);
       const next = db.updateSettings(clean);
-      deps.onSettingsChanged(next);
+      deps.onSettingsChanged(next, Object.keys(clean) as Array<keyof AppSettings>);
       return next;
+    },
+    listBackups: () => deps.backups.list(),
+    backUpNow: () => {
+      if (!deps.backups.create()) throw new UserFacingError('Couldn’t back up the database. Check there’s free space in the data folder.');
+      return deps.backups.list();
     },
 
     listDictationModels: () => deps.models.status(),

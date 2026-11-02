@@ -55,6 +55,7 @@ interface State {
 type Action =
   | { type: 'init'; agents: Agent[]; projects: Project[]; conversations: Conversation[]; statuses: ProviderStatus[]; inbox: InboxItem[]; settings: AppSettings }
   | { type: 'settings'; settings: AppSettings }
+  | { type: 'settings-patch'; patch: Partial<AppSettings> }
   | { type: 'view'; view: View }
   | { type: 'agents'; agents: Agent[] }
   | { type: 'projects'; projects: Project[] }
@@ -162,6 +163,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, inbox: action.inbox };
     case 'settings':
       return { ...state, settings: action.settings };
+    case 'settings-patch':
+      return { ...state, settings: { ...state.settings, ...action.patch } };
     case 'detail': {
       // Loading a chat also syncs its running flag, which covers a renderer reload mid-run.
       const id = action.detail.conversation.id;
@@ -289,8 +292,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(RESYNC_EVENT, resync);
   }, []);
 
-  // Appearance: styles.css keys the palette, zoom and column width off these attributes.
-  const { theme, textSize, chatWidth } = state.settings;
+  // Appearance: styles.css keys the palette, zoom, spacing and column width off these attributes.
+  const { theme, darkStyle, accentColor, uiScale, density, chatWidth, uiFont, codeFont, reduceMotion } = state.settings;
   useEffect(() => {
     const root = document.documentElement;
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -298,12 +301,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       root.dataset.theme = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme;
     };
     apply();
-    root.dataset.textSize = textSize;
+    root.dataset.darkStyle = darkStyle;
+    root.dataset.accent = accentColor;
+    root.dataset.density = density;
     root.dataset.chatWidth = chatWidth;
+    root.toggleAttribute('data-reduce-motion', reduceMotion);
+    root.style.setProperty('--nest-zoom', String(uiScale / 100));
     root.style.setProperty('--chat-width', chatWidth === 'narrow' ? '680px' : chatWidth === 'wide' ? '920px' : '760px');
+    // Chosen fonts go first; the built-in stack stays behind them for anything not installed.
+    const font = (prop: string, value: string) => (value ? root.style.setProperty(prop, `${value},`) : root.style.removeProperty(prop));
+    font('--nest-font-ui', uiFont);
+    font('--nest-font-code', codeFont);
     media.addEventListener('change', apply);
     return () => media.removeEventListener('change', apply);
-  }, [theme, textSize, chatWidth]);
+  }, [theme, darkStyle, accentColor, uiScale, density, chatWidth, uiFont, codeFont, reduceMotion]);
 
   useEffect(() => {
     if (!state.toast) return;
@@ -330,10 +341,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   openRef.current = openConversation;
 
+  // Settings change on screen straight away; the saved copy replaces them once the last
+  // pending save returns (an older reply would briefly undo a newer change).
+  const settingsSeq = useRef(0);
   const updateSettings = useCallback(
     async (patch: Partial<AppSettings>) => {
+      const seq = ++settingsSeq.current;
+      dispatch({ type: 'settings-patch', patch });
       const next = await attempt(() => api.updateSettings(patch));
+      if (seq !== settingsSeq.current) return;
       if (next) dispatch({ type: 'settings', settings: next });
+      else void api.getSettings().then((settings) => seq === settingsSeq.current && dispatch({ type: 'settings', settings })).catch(() => {});
     },
     [attempt],
   );

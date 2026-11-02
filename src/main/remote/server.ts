@@ -32,6 +32,8 @@ export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
   'revokeRemoteDevice',
   'setUpTailscale',
   'testRemoteNotification',
+  'listBackups',
+  'backUpNow',
 ]);
 
 /** Settings a paired device can't change: which programs run, and how much they may do unasked. */

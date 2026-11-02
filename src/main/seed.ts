@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { DEFAULT_PERMISSIONS, DEFAULT_SETTINGS, type AppSettings } from '@shared/types';
 import { AGENT_TEMPLATES } from '@shared/templates';
 import type { NestDb } from './db';
+import { sanitizeSettings } from './settings';
 
 /** Two starter agents on first launch only, so the app is usable immediately. */
 export function seedIfEmpty(db: NestDb): void {
@@ -25,12 +26,15 @@ export function applyConfigFile(db: NestDb, file: string): void {
   if (!existsSync(file)) return;
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    // Same validation as the Settings screen, one key at a time so one bad value doesn't drop the rest.
     const patch: Partial<AppSettings> = {};
     for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof AppSettings>) {
       if (!(key in raw)) continue;
-      const value = raw[key];
-      const expected = typeof DEFAULT_SETTINGS[key];
-      if (value === null || typeof value === expected || (expected === 'object' && typeof value === 'string')) (patch as Record<string, unknown>)[key] = value;
+      try {
+        Object.assign(patch, sanitizeSettings({ [key]: raw[key] }));
+      } catch (err) {
+        console.error(`[nest] ${file}: ignoring ${key}:`, (err as Error).message);
+      }
     }
     db.updateSettings(patch);
   } catch (err) {

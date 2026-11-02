@@ -3,10 +3,11 @@ import path from 'node:path';
 import { MODEL_SCHEME } from '@shared/dictation';
 import { IPC_EVENT_CHANNEL } from '@shared/ipc';
 import { mkdirSync } from 'node:fs';
-import { API_PROVIDERS, PROVIDERS, type ApiProviderId, type NestEvent, type ProviderId, type ProviderStatus } from '@shared/types';
+import { API_PROVIDERS, PROVIDERS, type ApiProviderId, type AppSettings, type NestEvent, type ProviderId, type ProviderStatus } from '@shared/types';
 import { ConnectorService } from './connectors';
 import { AgentBrowserHost } from './agentBrowser';
 import { NestDb } from './db';
+import { PROVIDER_SETTINGS } from './settings';
 import { createHandlers, invokeHandler, registerIpc } from './ipc';
 import { RemoteHost } from './remote/host';
 import { ClaudeProvider } from './providers/claude';
@@ -63,27 +64,28 @@ let bridge: NestBridge | null = null;
 let updater: Updater | null = null;
 let remote: RemoteHost | null = null;
 
-/** Window background matching the renderer theme, so launch doesn't flash the wrong colour. */
-function windowBackground(): string {
-  const theme = db?.getSettings().theme ?? 'system';
+/** The page's canvas colour (styles.css), so launch doesn't flash the wrong colour. */
+function canvasColour(settings: AppSettings | undefined): { dark: boolean; canvas: string } {
+  const theme = settings?.theme ?? 'system';
   const dark = theme === 'dark' || (theme === 'system' && nativeTheme.shouldUseDarkColors);
-  return dark ? '#161618' : '#ffffff';
+  return { dark, canvas: !dark ? '#ffffff' : settings?.darkStyle === 'black' ? '#000000' : '#161618' };
 }
 
-/** Matches the renderer's text-size zoom on #root (styles.css). */
-const TEXT_ZOOM = { small: 0.92, default: 1, large: 1.1 } as const;
+function windowBackground(): string {
+  return canvasColour(db?.getSettings()).canvas;
+}
 
 /**
  * The native title bar is hidden; Windows draws only its caption buttons, over
  * the top-right of the page header. They take the page colours and stop 1px
- * short of the 56px header so its bottom border runs underneath.
+ * short of the 56px header so its bottom border runs underneath. The header
+ * scales with Appearance → Interface size (zoom on #root).
  */
 function titleBarOverlay(): Electron.TitleBarOverlayOptions {
   const settings = db?.getSettings();
-  const theme = settings?.theme ?? 'system';
-  const dark = theme === 'dark' || (theme === 'system' && nativeTheme.shouldUseDarkColors);
-  const zoom = TEXT_ZOOM[settings?.textSize ?? 'default'] ?? 1;
-  return { color: dark ? '#161618' : '#ffffff', symbolColor: dark ? '#c9c9ce' : '#3c3c43', height: Math.round(56 * zoom) - 1 };
+  const { dark, canvas } = canvasColour(settings);
+  const zoom = (settings?.uiScale ?? 100) / 100;
+  return { color: canvas, symbolColor: dark ? '#c9c9ce' : '#3c3c43', height: Math.round(56 * zoom) - 1 };
 }
 
 function applyWindowTheme(): void {
@@ -194,10 +196,12 @@ app.whenReady().then(() => {
   claude.onServersSeen = (seen) => connectors.noteSeen('claude', seen);
   runs.onRunFinished = (conversationId, run, message) => runs.handleHandoffCompletion(conversationId, run, message);
   runs.onAttention = (e) => {
+    const settings = db.getSettings();
+    if (!settings.notifyOn[e.kind]) return;
     // Phones get a push whenever nobody is looking at Nest on the PC.
     if (!mainWindow?.isFocused()) void remote?.notify({ title: e.title, body: e.body, conversationId: e.conversationId, kind: e.kind });
-    if (!db.getSettings().notifyWhenUnfocused || mainWindow?.isFocused() || !Notification.isSupported()) return;
-    const note = new Notification({ title: e.title, body: e.body, silent: e.kind === 'finished' });
+    if (!settings.notifyWhenUnfocused || mainWindow?.isFocused() || !Notification.isSupported()) return;
+    const note = new Notification({ title: e.title, body: e.body, silent: !settings.notificationSound || e.kind === 'finished' });
     note.on('click', () => {
       if (mainWindow?.isMinimized()) mainWindow.restore();
       mainWindow?.show();
@@ -268,11 +272,15 @@ app.whenReady().then(() => {
     getWindow: () => mainWindow,
     defaultWorkspace: () => effectiveDefaultWorkspace(db),
     broadcast,
-    onSettingsChanged: () => {
+    onSettingsChanged: (_next, changed) => {
       applyWindowTheme();
-      // Paths and the API-billing switch change what the installed agents resolve to.
-      for (const id of ['claude', 'codex', 'cursor', 'gemini', 'grok'] as const) void adapters[id].detect().catch(() => {});
+      // Paths and the API-billing switch change what the installed agents resolve to. Nothing
+      // else does, so a theme or text change doesn't start every provider's CLI again.
+      if (changed.some((k) => PROVIDER_SETTINGS.includes(k))) {
+        for (const id of ['claude', 'codex', 'cursor', 'gemini', 'grok'] as const) void adapters[id].detect().catch(() => {});
+      }
     },
+    backups: { list: () => db.listBackups(), create: () => db.backUpNow() },
     apiKeys,
   });
   registerIpc(handlers, () => mainWindow);

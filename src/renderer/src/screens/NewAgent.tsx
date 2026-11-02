@@ -41,7 +41,7 @@ export function NewAgentScreen({ projectId }: { projectId?: string } = {}) {
         avatar,
         instructions: template?.instructions ?? '',
         provider,
-        model: null,
+        model: state.settings.defaultModels[provider] ?? null,
         workspace: null,
         projectId: projectId ?? null,
         pinned: false,

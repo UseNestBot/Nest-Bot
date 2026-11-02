@@ -421,23 +421,62 @@ export interface ConversationDetail {
 
 export type SendKey = 'enter' | 'ctrl-enter';
 export type ThemeSetting = 'system' | 'light' | 'dark';
-export type TextSize = 'small' | 'default' | 'large';
 export type ChatWidth = 'narrow' | 'default' | 'wide';
+export type AccentColor = 'blue' | 'violet' | 'green' | 'orange' | 'pink' | 'graphite';
+export type Density = 'compact' | 'default' | 'comfortable';
+export type DarkStyle = 'dim' | 'black';
+
+/** Interface zoom, in percent. */
+export const UI_SCALE_MIN = 80;
+export const UI_SCALE_MAX = 130;
+export const UI_SCALE_STEP = 5;
+
+/** Which background notifications Nest sends (desktop and paired phones). */
+export interface NotifyOn {
+  finished: boolean;
+  failed: boolean;
+  approval: boolean;
+}
+
+/** A database snapshot in the backups folder. */
+export interface BackupInfo {
+  name: string;
+  path: string;
+  bytes: number;
+  createdAt: number;
+}
 
 export interface AppSettings {
   // Appearance
   theme: ThemeSetting;
-  textSize: TextSize;
+  /** Dark theme variant: the default dim grey, or true black for OLED screens. */
+  darkStyle: DarkStyle;
+  accentColor: AccentColor;
+  /** Zoom for the whole interface, UI_SCALE_MIN–UI_SCALE_MAX percent. */
+  uiScale: number;
+  /** Spacing scale: tighter or roomier padding and gaps everywhere. */
+  density: Density;
   chatWidth: ChatWidth;
+  /** Font family names tried before the built-in stacks. Empty = built-in. */
+  uiFont: string;
+  codeFont: string;
+  /** Turn off animations and transitions. */
+  reduceMotion: boolean;
   // General
   /** Folder agents work in when a conversation has no workspace. null = Documents/Nest. */
   defaultWorkspace: string | null;
   /** Provider preselected for new agents. */
   defaultProvider: ProviderId;
+  /** Model preselected for new agents, per provider. Missing = the provider's default. */
+  defaultModels: Partial<Record<ProviderId, string>>;
   /** Give agents Nest's own tools (profile, memory, delegation, schedules) over MCP. */
   agentTools: boolean;
   /** Desktop notification when a reply finishes or needs approval while Nest is in the background. */
   notifyWhenUnfocused: boolean;
+  /** Which events notify, on the desktop and on paired phones. */
+  notifyOn: NotifyOn;
+  /** Play the system sound with failure and approval notifications. */
+  notificationSound: boolean;
   // Conversation display
   sendKey: SendKey;
   expandActivity: boolean;
@@ -467,12 +506,21 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
-  textSize: 'default',
+  darkStyle: 'dim',
+  accentColor: 'blue',
+  uiScale: 100,
+  density: 'default',
   chatWidth: 'default',
+  uiFont: '',
+  codeFont: '',
+  reduceMotion: false,
   defaultWorkspace: null,
   defaultProvider: 'claude',
+  defaultModels: {},
   agentTools: true,
   notifyWhenUnfocused: true,
+  notifyOn: { finished: true, failed: true, approval: true },
+  notificationSound: true,
   sendKey: 'enter',
   expandActivity: false,
   showUsage: true,
