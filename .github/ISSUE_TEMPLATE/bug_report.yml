@@ -1,0 +1,113 @@
+name: Bug report
+description: Something in Nest is broken or behaves wrongly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go through the [private report form](https://github.com/UseNestBot/Nest-Bot/security/advisories/new) instead, not here.
+
+        Please remove API keys, tokens, pairing codes and anything personal from what you paste.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create an agent on Claude Code
+        2. Send "..."
+        3. Click Approve on the card
+        4. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Nest version
+      description: Shown under Settings, Versions, e.g. v0.1.0:123
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (AppImage)
+        - Linux (.deb)
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: providers
+    attributes:
+      label: Provider
+      description: Which provider was the agent running on?
+      multiple: true
+      options:
+        - Claude Code
+        - Codex
+        - Cursor
+        - Gemini CLI
+        - Grok CLI
+        - API key (OpenRouter, OpenAI, Anthropic, Gemini, xAI)
+        - Not provider related
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: Provider CLI version
+      description: Also under Settings, Versions, or run `claude --version`, `codex --version` and so on
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Chat and runs
+        - Approvals and permissions
+        - Switching providers / handoffs
+        - Delegation
+        - Memory
+        - Routines and schedules
+        - Projects
+        - Connectors
+        - Browser (Claude in Chrome)
+        - Voice / dictation
+        - Remote access (phone)
+        - Install, update or uninstall
+        - Settings
+        - Other
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Error messages or screenshots. For Codex problems, output from running Nest with `NEST_DEBUG_PROTOCOL=1` helps.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I'm on the latest release, or this happens on the latest release too.
+          required: true
+        - label: I searched existing issues and this isn't a duplicate.
+          required: true
+        - label: The provider CLI works on its own outside Nest.

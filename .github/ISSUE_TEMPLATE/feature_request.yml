@@ -1,0 +1,53 @@
+name: Feature request
+description: Suggest something new or a change to how Nest works
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to happen?
+      description: Describe how it would work from your side. Sketches and screenshots welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've tried
+      description: Workarounds or other ways you've thought of.
+
+  - type: dropdown
+    id: providers
+    attributes:
+      label: Which providers does this involve?
+      multiple: true
+      options:
+        - All of them
+        - Claude Code
+        - Codex
+        - Cursor
+        - Gemini CLI
+        - Grok CLI
+        - API keys
+        - A provider Nest doesn't support yet
+        - Not provider related
+
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Checks
+      description: Nest runs the official CLIs on your own subscription and asks before acting. See "Things we won't merge" in CONTRIBUTING.md.
+      options:
+        - label: I searched existing issues and this hasn't been asked for.
+          required: true
+        - label: This doesn't need Nest to handle provider credentials, scrape websites or skip approvals.
+          required: true
+        - label: I'd be up for opening a pull request for this.

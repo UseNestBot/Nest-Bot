@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/UseNestBot/Nest-Bot/security/advisories/new
+    about: Please report security problems privately, not as a public issue.
+  - name: Problem with Claude Code itself
+    url: https://github.com/anthropics/claude-code/issues
+    about: Sign in, plan, rate limit or CLI bugs that also happen outside Nest.
+  - name: Problem with Codex itself
+    url: https://github.com/openai/codex/issues
+    about: Sign in, plan, rate limit or CLI bugs that also happen outside Nest.

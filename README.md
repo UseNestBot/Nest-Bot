@@ -221,6 +221,10 @@ Set `NEST_DEBUG_PROTOCOL=1` to log Codex protocol method names.
 - When a Codex agent's model is *Default*, Nest uses the default from Codex's catalog for your account, since a model pinned in `~/.codex/config.toml` might not be on your plan.
 - Nest is an independent project, not affiliated with or endorsed by OpenAI or Anthropic. Codex, ChatGPT, Claude and Claude Code are their trademarks.
 
+## Contributing
+
+Bug reports, fixes and new provider adapters are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md). For help see [SUPPORT.md](SUPPORT.md), and report security problems privately as described in [SECURITY.md](SECURITY.md).
+
 ## License
 
 [GPL3.0](LICENSE)
