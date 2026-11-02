@@ -338,11 +338,9 @@ export class CodexProvider implements ProviderAdapter {
       }
       turn.threadId = threadId;
       this.turns.set(threadId, turn);
-      const items: unknown[] = [{ type: 'text', text: input.prompt, text_elements: [] }];
-      for (const att of input.attachments) if (att.isImage) items.push({ type: 'localImage', path: att.path });
       const res = await rpc.request<{ turn: { id: string } }>('turn/start', {
         threadId,
-        input: items,
+        input: userInput(input.prompt, input.attachments),
         ...(threadConfig.model ? { model: threadConfig.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
       });
@@ -358,6 +356,19 @@ export class CodexProvider implements ProviderAdapter {
       if (!req || !this.rpc) return;
       turn.approvals.delete(requestId);
       this.rpc.respond(req.id, codexApprovalResult(req.method, req.params, choiceId));
+    };
+
+    // Codex adds the message to the running turn; the agent reads it at its next step.
+    const steer = async (prompt: string, attachments: TurnInput['attachments']) => {
+      if (finished || cancelRequested) return false;
+      await turnStarted;
+      if (finished || cancelRequested || !this.rpc || !threadId || !mapper.turnId) return false;
+      try {
+        await this.rpc.request('turn/steer', { threadId, expectedTurnId: mapper.turnId, input: userInput(prompt, attachments) }, 15000);
+        return !finished;
+      } catch {
+        return false; // the turn ended in the meantime
+      }
     };
 
     const cancel = async () => {
@@ -380,7 +391,7 @@ export class CodexProvider implements ProviderAdapter {
       }
     };
 
-    return { cancel, respondApproval, done };
+    return { cancel, respondApproval, steer, done };
   }
 
   async listConnectors(): Promise<ConnectorInventory> {
@@ -406,4 +417,10 @@ export class CodexProvider implements ProviderAdapter {
     await this.rpc?.stop();
     this.rpc = null;
   }
+}
+
+function userInput(prompt: string, attachments: TurnInput['attachments']): unknown[] {
+  const items: unknown[] = [{ type: 'text', text: prompt, text_elements: [] }];
+  for (const att of attachments) if (att.isImage) items.push({ type: 'localImage', path: att.path });
+  return items;
 }

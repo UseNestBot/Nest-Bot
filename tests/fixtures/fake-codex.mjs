@@ -11,6 +11,8 @@ let threadSeq = 0;
 let serverReqId = 100;
 const waiting = new Map();
 const activeTurns = new Map();
+/** [steerable] turns waiting for turn/steer, by turn id. */
+const steerable = new Map();
 
 function notify(method, params) {
   out({ method, params });
@@ -42,6 +44,13 @@ async function runTurn(threadId, turnId, text) {
     const ok = decision.decision === 'accept';
     notify('item/completed', { threadId, turnId, item: { type: 'commandExecution', id: 'cmd1', command: 'touch x', cwd: '/w', status: ok ? 'completed' : 'declined', exitCode: ok ? 0 : null, aggregatedOutput: ok ? '' : null } });
     notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: 'a1', text: `decision:${decision.decision}` } });
+    notify('turn/completed', { threadId, turn: { id: turnId, status: 'completed', items: [] } });
+    return;
+  }
+  if (text.includes('[steerable]')) {
+    notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: 'a1', text: 'working on it' } });
+    const steer = await new Promise((r) => steerable.set(turnId, r));
+    notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: 'a2', text: `steered:${steer}` } });
     notify('turn/completed', { threadId, turn: { id: turnId, status: 'completed', items: [] } });
     return;
   }
@@ -112,6 +121,14 @@ function handle(msg) {
       const turnId = `turn_${Date.now()}`;
       out({ id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
       void runTurn(params.threadId, turnId, params.input[0].text);
+      return;
+    }
+    case 'turn/steer': {
+      const resume = steerable.get(params.expectedTurnId);
+      if (!resume) return out({ id, error: { code: -32600, message: 'no active turn to steer' } });
+      steerable.delete(params.expectedTurnId);
+      out({ id, result: { turnId: params.expectedTurnId } });
+      resume(params.input[0].text);
       return;
     }
     case 'turn/interrupt': {

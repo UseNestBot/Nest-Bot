@@ -26,6 +26,8 @@ const sessionId = sessionIdx >= 0 ? args[sessionIdx + 1] : resumeIdx >= 0 ? args
 let buf = '';
 const pending = new Map();
 let interrupted = false;
+/** Set while a [steerable] turn waits for a message sent mid-turn. */
+let steerWaiter = null;
 
 function result(text, isError = false) {
   out({ type: 'result', subtype: 'success', is_error: isError, result: text, session_id: sessionId, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 2 } });
@@ -70,6 +72,17 @@ async function handleUser(prompt) {
     const allowed = decision.behavior === 'allow';
     out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: allowed ? 'ok' : 'Permission denied by user', is_error: !allowed }] }, session_id: sessionId, parent_tool_use_id: null });
     assistantText('m2', `decision:${decision.behavior}:${decision.updatedPermissions?.[0]?.destination ?? 'none'}`);
+    setTimeout(() => result('done'), 60);
+    return;
+  }
+  if (prompt.includes('[steerable]')) {
+    // A tool runs; a message sent meanwhile is echoed back (--replay-user-messages) and answered in the same turn.
+    out({ type: 'assistant', message: { id: 's1', content: [{ type: 'text', text: 'working on it' }, { type: 'tool_use', id: 'tu-s', name: 'Bash', input: { command: 'sleep 1' } }] }, session_id: sessionId, parent_tool_use_id: null });
+    const steer = await new Promise((r) => (steerWaiter = r));
+    steerWaiter = null;
+    out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu-s', content: 'ok', is_error: false }] }, session_id: sessionId, parent_tool_use_id: null });
+    out({ type: 'user', message: steer.message, uuid: steer.uuid, isReplay: true, session_id: sessionId, parent_tool_use_id: null });
+    assistantText('s2', `steered:${steer.message.content[0].text}`);
     setTimeout(() => result('done'), 60);
     return;
   }
@@ -130,7 +143,8 @@ process.stdin.on('data', (chunk) => {
     buf = buf.slice(i + 1);
     if (!line.trim()) continue;
     const msg = JSON.parse(line);
-    if (msg.type === 'user') void handleUser(msg.message.content[0].text);
+    if (msg.type === 'user' && steerWaiter) steerWaiter(msg);
+    else if (msg.type === 'user') void handleUser(msg.message.content[0].text);
     else if (msg.type === 'control_response') pending.get(msg.response.request_id)?.(msg.response.response);
     else if (msg.type === 'control_request' && msg.request.subtype === 'mcp_status') {
       // What a session loads; differs from `mcp list` (a claude.ai Figma connector, no figma plugin), like the real CLI can.

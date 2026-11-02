@@ -162,8 +162,14 @@ export class ClaudeProvider implements ProviderAdapter {
     let resolveDone!: () => void;
     const done = new Promise<void>((r) => (resolveDone = r));
     let resultResolve: (() => void) | null = null;
+    /** The last result of the turn: no steering message is still waiting to be read. */
     const resultSeen = new Promise<void>((r) => (resultResolve = r));
+    let resultFinal = false;
     let policy: ConnectorPolicy | null = null;
+    /** Steering messages Claude Code has not read yet, by uuid; it echoes each one back when it does. */
+    const unread = new Set<string>();
+    /** Steering messages sent before the process started. */
+    const queued: unknown[] = [];
 
     const finish = (status: 'completed' | 'interrupted' | 'failed', error?: string) => {
       if (finished) return;
@@ -194,6 +200,7 @@ export class ClaudeProvider implements ProviderAdapter {
         '--output-format', 'stream-json',
         '--verbose',
         '--include-partial-messages',
+        '--replay-user-messages',
         '--permission-prompt-tool', 'stdio',
         '--permission-mode', input.permissions.claudeMode,
       ];
@@ -233,10 +240,17 @@ export class ClaudeProvider implements ProviderAdapter {
             return;
           }
           if (record.type === 'control_response') return;
+          if (record.type === 'user' && record.isReplay === true) {
+            if (typeof record.uuid === 'string') unread.delete(record.uuid);
+            return;
+          }
           if (record.type === 'system' && record.subtype === 'init') noteInit(record);
           for (const event of mapper.map(record)) {
             if (event.type === 'completed') {
               failure = event.status === 'failed' ? event.error : undefined;
+              // A steering message that arrived after the agent's last step starts another turn in this process.
+              if (unread.size && !cancelRequested && event.status !== 'failed') continue;
+              resultFinal = true;
               resultResolve?.();
               continue; // finish once the process has wound down
             }
@@ -309,6 +323,7 @@ export class ClaudeProvider implements ProviderAdapter {
       });
 
       send({ type: 'user', session_id: '', message: { role: 'user', content: buildContent(input) }, parent_tool_use_id: null });
+      for (const message of queued.splice(0)) send(message);
 
       // Print mode with streamed input keeps reading stdin; close it once the turn's result arrives.
       void resultSeen.then(async () => {
@@ -322,6 +337,17 @@ export class ClaudeProvider implements ProviderAdapter {
       if (!request) return;
       pendingApprovals.delete(requestId);
       send({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response: claudePermissionResponse(request, choiceId) } });
+    };
+
+    // Claude Code reads a message sent mid-turn at its next step (after the running tool returns).
+    const steer = async (prompt: string, attachments: TurnInput['attachments']) => {
+      if (finished || cancelRequested || resultFinal) return false;
+      const uuid = randomUUID();
+      const message = { type: 'user', session_id: '', uuid, message: { role: 'user', content: buildContent({ prompt, attachments }) }, parent_tool_use_id: null };
+      unread.add(uuid);
+      if (child) send(message);
+      else queued.push(message);
+      return true;
     };
 
     const cancel = async () => {
@@ -344,7 +370,7 @@ export class ClaudeProvider implements ProviderAdapter {
       emit({ type: 'error', message: err.message, fatal: true });
       finish('failed', err.message);
     });
-    return { cancel, respondApproval, done };
+    return { cancel, respondApproval, steer, done };
   }
 
   async listConnectors(): Promise<ConnectorInventory> {
@@ -408,7 +434,7 @@ export class ClaudeProvider implements ProviderAdapter {
   }
 }
 
-function buildContent(input: TurnInput): unknown[] {
+function buildContent(input: Pick<TurnInput, 'prompt' | 'attachments'>): unknown[] {
   const content: unknown[] = [{ type: 'text', text: input.prompt }];
   for (const att of input.attachments) {
     if (!att.isImage) continue;
