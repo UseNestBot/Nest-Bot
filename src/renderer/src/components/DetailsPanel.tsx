@@ -187,8 +187,9 @@ function Instructions({ text }: { text: string }) {
 
 /** Routines for this agent, drawn as a plain list: a green clock when active, a pause mark when not. */
 function Routines({ agent }: { agent: Agent }) {
-  const { attempt, openConversation } = useStore();
+  const { state, attempt, openConversation } = useStore();
   const schedules = useSchedules(agent.id);
+  const projectName = (id: string | null) => (id && state.projects.find((p) => p.id === id)?.name) || null;
   const [editing, setEditing] = useState<Schedule | 'new' | null>(null);
   const toggle = (s: Schedule) => void attempt(() => api.updateSchedule(s.id, { agentId: s.agentId, title: s.title, prompt: s.prompt, cadence: s.cadence, target: s.target, enabled: !s.enabled }));
 
@@ -211,6 +212,7 @@ function Routines({ agent }: { agent: Agent }) {
                 <button onClick={() => setEditing(s)} className="block w-full text-left">
                   <span className="block truncate text-[14px] text-ink">{s.title}</span>
                   <span className="block truncate text-[13px] text-muted">{s.enabled ? friendlyCadence(s.cadence) : 'Paused'}</span>
+                  <span className="block truncate text-[12px] text-faint">{projectName(s.projectId) ? `In ${projectName(s.projectId)}` : 'No project'}</span>
                 </button>
               </Tooltip>
               {s.lastStatus && s.lastStatus !== 'Started' && <div className="mt-0.5 text-[12px] text-warn-ink">{s.lastStatus}</div>}

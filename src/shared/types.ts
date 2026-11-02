@@ -596,6 +596,11 @@ export interface Schedule {
   /** 'new' starts a fresh conversation each run; 'same' keeps appending to one. */
   target: 'new' | 'same';
   conversationId: string | null;
+  /**
+   * The project each run works in: its chats appear there and use the project's
+   * brief, memory, teammates and shared folder. Defaults to the agent's project.
+   */
+  projectId: string | null;
   enabled: boolean;
   nextRunAt: number | null;
   lastRunAt: number | null;
@@ -605,7 +610,8 @@ export interface Schedule {
   updatedAt: number;
 }
 
-export type ScheduleDraft = Pick<Schedule, 'agentId' | 'title' | 'prompt' | 'cadence' | 'target' | 'enabled'>;
+/** projectId omitted: keep the schedule's project (or, for a new one, use the agent's). null: no project. */
+export type ScheduleDraft = Pick<Schedule, 'agentId' | 'title' | 'prompt' | 'cadence' | 'target' | 'enabled'> & { projectId?: string | null };
 
 // ---------------------------------------------------------------------------
 // Connectors (MCP servers and apps the providers already have) and browser use.

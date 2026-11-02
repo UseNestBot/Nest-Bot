@@ -39,7 +39,7 @@ describe('projects', () => {
     first.close();
     // Roll the file back to the schema before projects, with two agents in the "Launch" group.
     const raw = new DatabaseSync(file);
-    raw.exec('DROP TABLE projects; ALTER TABLE agents DROP COLUMN project_id; ALTER TABLE memory_notes DROP COLUMN project_id; ALTER TABLE conversations DROP COLUMN project_id; PRAGMA user_version = 4;');
+    raw.exec('DROP TABLE projects; ALTER TABLE agents DROP COLUMN project_id; ALTER TABLE memory_notes DROP COLUMN project_id; ALTER TABLE conversations DROP COLUMN project_id; ALTER TABLE schedules DROP COLUMN project_id; PRAGMA user_version = 4;');
     raw.prepare(`UPDATE agents SET group_name = ' Launch ' WHERE id IN (?, ?)`).run(a.id, b.id);
     raw.close();
 
@@ -141,7 +141,7 @@ describe('projects', () => {
     const lonely = first.createConversation(agent(first, 'Loner'));
     first.close();
     const raw = new DatabaseSync(file);
-    raw.exec('ALTER TABLE conversations DROP COLUMN project_id; PRAGMA user_version = 5;');
+    raw.exec('ALTER TABLE conversations DROP COLUMN project_id; ALTER TABLE schedules DROP COLUMN project_id; PRAGMA user_version = 5;');
     raw.close();
 
     const db = open(file);

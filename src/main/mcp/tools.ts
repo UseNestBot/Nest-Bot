@@ -1,6 +1,7 @@
 import { describeCadence, sanitizeCadence } from '@shared/schedule';
 import { AVATAR_PALETTE } from '@shared/templates';
-import { DEFAULT_PERMISSIONS, PROVIDER_LABEL, PROVIDERS, isProviderId, type ProviderId } from '@shared/types';
+import path from 'node:path';
+import { DEFAULT_PERMISSIONS, PROVIDER_LABEL, PROVIDERS, isProviderId, type Project, type ProviderId } from '@shared/types';
 import type { NestDb } from '../db';
 import type { RunManager } from '../runs';
 import type { Scheduler } from '../scheduler';
@@ -98,6 +99,7 @@ export const TOOL_DEFS: ToolDef[] = [
         title: { type: 'string' },
         prompt: { type: 'string', description: 'What the agent should do each time.' },
         agent: { type: 'string', description: 'Agent name; defaults to you.' },
+        project: { type: 'string', description: 'Project each run works in: its chats appear there and use the project’s shared folder. Defaults to the agent’s project; "none" for no project.' },
         cadence: {
           type: 'string',
           enum: ['daily', 'weekdays', 'weekly', 'interval'],
@@ -107,6 +109,40 @@ export const TOOL_DEFS: ToolDef[] = [
         every_minutes: { type: 'integer', description: 'Minutes between runs (interval, minimum 15).' },
       },
       ['title', 'prompt', 'cadence'],
+    ),
+  },
+  {
+    name: 'update_schedule',
+    description:
+      'Change an existing schedule (routine): the project its runs work in (their chats appear there and use the project’s shared folder), what it does, when it runs, or pause and resume it. The user approves it in Nest.',
+    inputSchema: obj(
+      {
+        schedule: { type: 'string', description: 'The schedule’s name, as list_schedules shows it.' },
+        project: { type: 'string', description: 'Project name, or "none".' },
+        prompt: { type: 'string', description: 'Replacement instructions for each run (omit to keep).' },
+        cadence: {
+          type: 'string',
+          enum: ['daily', 'weekdays', 'weekly', 'interval'],
+          description: 'New timing (omit to keep the current one).',
+        },
+        time: { type: 'string', description: 'HH:MM, 24-hour local time (daily, weekdays, weekly).' },
+        weekday: { type: 'integer', description: '0 = Sunday … 6 = Saturday (weekly).' },
+        every_minutes: { type: 'integer', description: 'Minutes between runs (interval, minimum 15).' },
+        enabled: { type: 'boolean', description: 'false pauses it, true resumes it.' },
+      },
+      ['schedule'],
+    ),
+  },
+  {
+    name: 'update_project',
+    description:
+      'Set a project’s shared folder. Members without a folder of their own, and scheduled runs in the project, work there. The user approves it in Nest.',
+    inputSchema: obj(
+      {
+        project: { type: 'string', description: 'Project name; default this chat’s project.' },
+        folder: { type: 'string', description: 'Full path of the folder (created when first used), or "default" for Nest’s default working folder.' },
+      },
+      ['folder'],
     ),
   },
   {
@@ -223,13 +259,19 @@ export const TERMINAL_TOOL_DEFS: ToolDef[] = [
   },
 ];
 
+/** Where a schedule's runs work, for approval cards and replies. */
+function worksIn(project: Project | null | undefined): string {
+  return project ? `in ${project.name} (${project.workspace ?? 'Nest’s default working folder'})` : 'outside any project';
+}
+
 /** Implements the Nest tools for one calling conversation. */
 export class NestTools {
   constructor(
     private readonly db: NestDb,
     private readonly runs: RunManager,
     private readonly scheduler: Scheduler,
-    private readonly onAgentsChanged: () => void,
+    /** Something an agent tool changed: agents (default) or projects. */
+    private readonly onAgentsChanged: (what?: 'agents' | 'projects') => void,
     /** The built-in browser and who may use it; absent in tests and when unavailable. */
     private readonly browser?: { host: BrowserTools; enabledFor: (agentId: string) => boolean },
     /** The shared terminal and which agents may use it (opt-in per agent); absent in tests. */
@@ -454,10 +496,14 @@ export class NestTools {
         const list = this.db.listSchedules();
         if (!list.length) return { ok: true, text: 'No schedules yet.' };
         const names = new Map(this.db.listAgents().map((a) => [a.id, a.name]));
+        const projects = new Map(this.db.listProjects().map((p) => [p.id, p.name]));
         return {
           ok: true,
           text: list
-            .map((s) => `- ${s.title} (${names.get(s.agentId) ?? 'removed agent'}): ${describeCadence(s.cadence)}${s.enabled ? '' : ' [paused]'}${s.nextRunAt ? `, next ${new Date(s.nextRunAt).toLocaleString()}` : ''}`)
+            .map(
+              (s) =>
+                `- ${s.title} (${names.get(s.agentId) ?? 'removed agent'}): ${describeCadence(s.cadence)}${s.enabled ? '' : ' [paused]'}, works in ${(s.projectId && projects.get(s.projectId)) || 'no project'}${s.nextRunAt ? `, next ${new Date(s.nextRunAt).toLocaleString()}` : ''}`,
+            )
             .join('\n'),
         };
       }
@@ -468,17 +514,79 @@ export class NestTools {
         const title = str('title', 80);
         const prompt = str('prompt');
         if (!title || !prompt) return { ok: false, text: 'title and prompt are required.' };
+        const projectArg = str('project', 80);
+        const project = projectArg ? this.findProject(projectArg) : agent.projectId ? this.db.getProject(agent.projectId) : null;
+        if (project === undefined) return { ok: false, text: `No project named "${projectArg}". Use get_project or list_agents to see the projects, or "none".` };
         const choice = await this.runs.requestLocalApproval(conversationId, {
           title: `${me.name} wants to create a schedule`,
           action: `${title}: ${describeCadence(cadence)}`,
-          target: agent.name,
+          target: `${agent.name} · ${worksIn(project)}`,
           reason: null,
           detail: prompt,
           approveLabel: 'Create schedule',
         }, ADMIN_ALWAYS_ASKS);
         if (choice !== 'allow') return { ok: false, text: 'The user declined this schedule.' };
-        const s = this.scheduler.create({ agentId: agent.id, title, prompt, cadence, target: 'new', enabled: true });
-        return { ok: true, text: `Created "${s.title}" (${describeCadence(s.cadence)}). Next run ${s.nextRunAt ? new Date(s.nextRunAt).toLocaleString() : 'not scheduled'}.` };
+        const s = this.scheduler.create({ agentId: agent.id, title, prompt, cadence, target: 'new', enabled: true, projectId: project?.id ?? null });
+        return { ok: true, text: `Created "${s.title}" (${describeCadence(s.cadence)}), ${worksIn(project)}. Next run ${s.nextRunAt ? new Date(s.nextRunAt).toLocaleString() : 'not scheduled'}.` };
+      }
+      case 'update_schedule': {
+        const name = str('schedule', 80).toLowerCase();
+        const matches = this.db.listSchedules().filter((s) => s.title.toLowerCase() === name);
+        if (!matches.length) return { ok: false, text: `No schedule named "${str('schedule', 80)}". Use list_schedules to see them.` };
+        if (matches.length > 1) return { ok: false, text: `Several schedules are named "${str('schedule', 80)}". Ask the user to rename one in Nest.` };
+        const cur = matches[0];
+        const owner = this.db.getAgent(cur.agentId);
+        if (!owner) return { ok: false, text: 'That schedule’s agent was removed.' };
+        const changes: string[] = [];
+        let projectId = cur.projectId;
+        const projectArg = str('project', 80);
+        if (projectArg) {
+          const project = this.findProject(projectArg);
+          if (project === undefined) return { ok: false, text: `No project named "${projectArg}". Use "none" for no project.` };
+          if ((project?.id ?? null) !== cur.projectId) changes.push(`works in ${worksIn(project)}`);
+          projectId = project?.id ?? null;
+        }
+        const cadence = str('cadence', 20) ? sanitizeCadence({ kind: str('cadence', 20), time: str('time', 5), weekday: args.weekday, minutes: args.every_minutes }) : cur.cadence;
+        if (describeCadence(cadence) !== describeCadence(cur.cadence)) changes.push(`runs ${describeCadence(cadence)}`);
+        const prompt = str('prompt') || cur.prompt;
+        if (prompt !== cur.prompt) changes.push('new instructions');
+        const enabled = typeof args.enabled === 'boolean' ? args.enabled : cur.enabled;
+        if (enabled !== cur.enabled) changes.push(enabled ? 'resume' : 'pause');
+        if (!changes.length) return { ok: true, text: `"${cur.title}" already looks like that; nothing changed.` };
+        const choice = await this.runs.requestLocalApproval(conversationId, {
+          title: `${me.name} wants to change a schedule`,
+          action: `${cur.title}: ${changes.join('; ')}`,
+          target: owner.name,
+          reason: null,
+          detail: prompt !== cur.prompt ? prompt : null,
+          approveLabel: 'Change schedule',
+        }, ADMIN_ALWAYS_ASKS);
+        if (choice !== 'allow') return { ok: false, text: 'The user declined this change.' };
+        const s = this.scheduler.update(cur.id, { agentId: cur.agentId, title: cur.title, prompt, cadence, target: cur.target, enabled, projectId });
+        const project = s.projectId ? this.db.getProject(s.projectId) : null;
+        return { ok: true, text: `Updated "${s.title}": ${describeCadence(s.cadence)}${s.enabled ? '' : ' (paused)'}, ${worksIn(project)}. Its next run opens there.` };
+      }
+      case 'update_project': {
+        const projectArg = str('project', 80);
+        const project = projectArg ? this.findProject(projectArg) : conversation.projectId ? this.db.getProject(conversation.projectId) : null;
+        if (!project) return { ok: false, text: projectArg ? `No project named "${projectArg}".` : 'This chat isn’t in a project. Name the project to change.' };
+        const folderArg = str('folder', 1000);
+        if (!folderArg) return { ok: false, text: 'folder is required: a full path, or "default".' };
+        const folder = folderArg.toLowerCase() === 'default' ? null : path.resolve(folderArg);
+        if (folder && !path.isAbsolute(folderArg)) return { ok: false, text: 'folder must be a full path, such as C:\\Users\\you\\Documents\\Nest\\gtm.' };
+        if ((folder ?? null) === (project.workspace ?? null)) return { ok: true, text: `${project.name} already uses ${folder ?? 'Nest’s default working folder'}.` };
+        const choice = await this.runs.requestLocalApproval(conversationId, {
+          title: `${me.name} wants to change a project’s folder`,
+          action: `${project.name}: ${folder ?? 'Nest’s default working folder'}`,
+          target: `Was: ${project.workspace ?? 'Nest’s default working folder'}`,
+          reason: null,
+          detail: 'Members without a folder of their own, and scheduled runs in this project, will work here from their next message.',
+          approveLabel: 'Change folder',
+        }, ADMIN_ALWAYS_ASKS);
+        if (choice !== 'allow') return { ok: false, text: 'The user declined this change.' };
+        this.db.updateProject(project.id, { name: project.name, brief: project.brief, workspace: folder, color: project.color });
+        this.onAgentsChanged('projects');
+        return { ok: true, text: `${project.name} now works in ${folder ?? 'Nest’s default working folder'}.` };
       }
       case 'create_agent': {
         const agentName = str('name', 60);
@@ -598,6 +706,13 @@ export class NestTools {
       default:
         return { ok: false, text: `Unknown Nest tool: ${name}` };
     }
+  }
+
+  /** A project by name; null for "none"; undefined when there's no such project. */
+  private findProject(name: string): Project | null | undefined {
+    const n = name.trim().toLowerCase();
+    if (n === 'none') return null;
+    return this.db.listProjects().find((p) => p.name.toLowerCase() === n);
   }
 
   private findAgent(name: string) {

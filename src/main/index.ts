@@ -224,7 +224,7 @@ app.whenReady().then(() => {
     return runs.workspaceFor(conversation);
   });
   terminals = terminalHost;
-  const tools = new NestTools(db, runs, scheduler, () => broadcast({ type: 'agents-changed' }), {
+  const tools = new NestTools(db, runs, scheduler, (what = 'agents') => broadcast({ type: what === 'projects' ? 'projects-changed' : 'agents-changed' }), {
     host: browserHost,
     enabledFor: (agentId) => {
       const access = db.getAgentAccess(agentId);

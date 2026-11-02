@@ -41,6 +41,7 @@ export function RoutinesList({ agentId, compact = false }: { agentId?: string; c
   const schedules = useSchedules(agentId);
   const [editing, setEditing] = useState<Schedule | 'new' | null>(null);
   const agentName = (id: string) => state.agents.find((a) => a.id === id)?.name ?? 'Removed agent';
+  const projectName = (id: string | null) => (id && state.projects.find((p) => p.id === id)?.name) || null;
 
   return (
     <div>
@@ -59,6 +60,7 @@ export function RoutinesList({ agentId, compact = false }: { agentId?: string; c
                       {describeCadence(s.cadence)}
                       {!agentId && ` · ${agentName(s.agentId)}`}
                     </div>
+                    <div className="truncate text-[11.5px] text-faint">{projectName(s.projectId) ? `In ${projectName(s.projectId)}` : 'No project'}</div>
                     <div className="truncate text-[11.5px] text-faint">{s.enabled ? `Next: ${whenLabel(s.nextRunAt)}` : 'Paused'}</div>
                     {s.lastStatus && s.lastStatus !== 'Started' && <div className="mt-0.5 text-[11.5px] text-warn-ink">{s.lastStatus}</div>}
                   </button>
@@ -113,7 +115,19 @@ export function RoutineEditor({ schedule, defaultAgentId, initial, onClose }: { 
     cadence: schedule?.cadence ?? initial?.cadence ?? { kind: 'weekdays', time: '08:30' },
     target: schedule?.target ?? initial?.target ?? 'new',
     enabled: schedule?.enabled ?? true,
+    projectId:
+      schedule?.projectId ??
+      (schedule ? null : initial?.projectId !== undefined ? initial.projectId : (state.agents.find((a) => a.id === (initial?.agentId ?? defaultAgentId ?? state.agents[0]?.id))?.projectId ?? null)),
   }));
+  // A new routine works in its agent's project until the user picks one.
+  const [projectPicked, setProjectPicked] = useState(Boolean(schedule) || initial?.projectId !== undefined);
+  const agent = state.agents.find((a) => a.id === draft.agentId) ?? null;
+  const project = draft.projectId ? (state.projects.find((p) => p.id === draft.projectId) ?? null) : null;
+  const folder = agent?.workspace
+    ? `${agent.name}’s own folder, ${agent.workspace}`
+    : project
+      ? (project.workspace ?? 'Nest’s default working folder (this project has no folder set)')
+      : 'Nest’s default working folder';
   const set = <K extends keyof ScheduleDraft>(k: K, v: ScheduleDraft[K]) => setDraft((d) => ({ ...d, [k]: v }));
   const c = draft.cadence;
   const time = c.kind === 'interval' ? '09:00' : c.time;
@@ -167,8 +181,32 @@ export function RoutineEditor({ schedule, defaultAgentId, initial, onClose }: { 
             label="Agent"
             className="w-full"
             value={draft.agentId}
-            onChange={(agentId) => set('agentId', agentId)}
+            onChange={(agentId) =>
+              setDraft((d) => ({ ...d, agentId, projectId: projectPicked ? d.projectId : (state.agents.find((a) => a.id === agentId)?.projectId ?? null) }))
+            }
             options={state.agents.map((a) => ({ value: a.id, label: a.name, hint: state.projects.find((p) => p.id === a.projectId)?.name }))}
+          />
+        </Field>
+        <Field
+          label="Works in"
+          hint={
+            project
+              ? `Each run’s chat appears in ${project.name} with its brief, memory and teammates, and works in ${folder}.`
+              : `Each run’s chat appears on its own, outside any project, and works in ${folder}.`
+          }
+        >
+          <Select
+            label="Project"
+            className="w-full"
+            value={draft.projectId ?? 'none'}
+            onChange={(v) => {
+              setProjectPicked(true);
+              set('projectId', v === 'none' ? null : v);
+            }}
+            options={[
+              ...state.projects.map((p) => ({ value: p.id, label: p.name, hint: p.id === agent?.projectId ? `${agent.name}’s project` : undefined })),
+              { value: 'none', label: 'No project' },
+            ]}
           />
         </Field>
         <Field label="What should it do each time?">

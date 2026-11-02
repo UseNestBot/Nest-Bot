@@ -37,9 +37,9 @@ export class Scheduler {
   }
 
   update(id: string, draft: ScheduleDraft): Schedule {
-    const clean = this.clean(draft);
     const current = this.db.getSchedule(id);
     if (!current) throw new UserFacingError('Schedule not found.');
+    const clean = this.clean(draft, current);
     const schedule = this.db.updateSchedule(id, {
       ...clean,
       // A different target agent or mode starts a fresh conversation thread.
@@ -63,13 +63,17 @@ export class Scheduler {
     return this.db.getSchedule(id)!;
   }
 
-  private clean(d: ScheduleDraft): ScheduleDraft {
+  /** `current`: the schedule being edited, whose project is kept when the draft leaves it out. */
+  private clean(d: ScheduleDraft, current?: Schedule): ScheduleDraft & { projectId: string | null } {
     const title = String(d.title ?? '').trim().slice(0, 80);
     const prompt = String(d.prompt ?? '').trim().slice(0, 20000);
     if (!title) throw new UserFacingError('Give the schedule a name.');
     if (!prompt) throw new UserFacingError('Describe what the agent should do each time.');
-    if (!this.db.getAgent(String(d.agentId))) throw new UserFacingError('Pick an agent for this schedule.');
-    return { agentId: d.agentId, title, prompt, cadence: sanitizeCadence(d.cadence), target: d.target === 'same' ? 'same' : 'new', enabled: Boolean(d.enabled) };
+    const agent = this.db.getAgent(String(d.agentId));
+    if (!agent) throw new UserFacingError('Pick an agent for this schedule.');
+    const asked = d.projectId === undefined ? (current ? current.projectId : agent.projectId) : d.projectId;
+    const projectId = typeof asked === 'string' && this.db.getProject(asked) ? asked : null;
+    return { agentId: d.agentId, title, prompt, cadence: sanitizeCadence(d.cadence), target: d.target === 'same' ? 'same' : 'new', enabled: Boolean(d.enabled), projectId };
   }
 
   async tick(now = Date.now()): Promise<void> {
@@ -94,9 +98,14 @@ export class Scheduler {
         this.db.updateSchedule(s.id, { nextRunAt: next, lastRunAt: now, lastStatus: 'Skipped: the previous run was still going.' });
         return;
       }
+      // Runs work in the schedule's project: the chat shows there and uses its folder, brief, memory and teammates.
+      const projectId = s.projectId && this.db.getProject(s.projectId) ? s.projectId : null;
+      if (conversationId && this.db.getConversation(conversationId)?.projectId !== projectId) {
+        this.broadcast({ type: 'conversation', conversation: this.db.updateConversation(conversationId, { projectId }) });
+      }
       if (!conversationId) {
         const stamp = new Date(now).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-        const conv = this.db.createConversation(agent, { title: s.target === 'same' ? s.title : `${s.title} · ${stamp}` });
+        const conv = this.db.createConversation(agent, { title: s.target === 'same' ? s.title : `${s.title} · ${stamp}`, projectId });
         conversationId = conv.id;
         this.broadcast({ type: 'conversation', conversation: conv });
       }
