@@ -3,7 +3,8 @@ import { Plus } from 'lucide-react';
 import { PROVIDER_LABEL } from '@shared/types';
 import { useStore } from './store';
 import { Sidebar } from './components/Sidebar';
-import { ConversationView } from './components/Conversation';
+import { Panes } from './components/Panes';
+import { focusComposer } from './components/Composer';
 import { Avatar } from './components/Avatar';
 import { cx } from './components/ui';
 import { AgentLibrary } from './screens/AgentLibrary';
@@ -15,14 +16,44 @@ import { SettingsScreen } from './screens/Settings';
 import { PHONE_QUERY, useMediaQuery } from './components/MobileBack';
 
 export function App() {
-  const { state, navigate, openConversation, startConversation } = useStore();
+  const { state, navigate, openConversation, startConversation, closePane, movePane } = useStore();
   const { view } = state;
 
   // Keyboard shortcuts (listed in Settings → Keyboard shortcuts).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
-      if (e.key === ',') {
+      const { panes } = state;
+      const focused = view.name === 'conversation' ? view.id : undefined;
+      const at = focused ? panes.indexOf(focused) : -1;
+      const focusPane = (id: string | undefined) => {
+        if (!id) return;
+        void openConversation(id).then(() => focusComposer(id));
+      };
+      // Chats side by side: Ctrl+1…4 and Ctrl+[ / ] move focus, Ctrl+Shift+[ / ] dock the focused chat
+      // further left or right, Ctrl+\ opens the latest chat that isn't showing beside it, Ctrl+Shift+W closes it.
+      if (!e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+        const id = panes[Number(e.code.slice(5)) - 1];
+        if (!id) return;
+        e.preventDefault();
+        focusPane(id);
+      } else if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
+        const by = e.code === 'BracketLeft' ? -1 : 1;
+        e.preventDefault();
+        if (e.shiftKey) {
+          if (focused) movePane(focused, by);
+        } else if (panes.length) {
+          focusPane(panes[at === -1 ? panes.length - 1 : (at + by + panes.length) % panes.length]);
+        }
+      } else if (e.code === 'Backslash' && !e.shiftKey) {
+        e.preventDefault();
+        const next = state.conversations.find((c) => !panes.includes(c.id));
+        if (next) void openConversation(next.id, 'right').then(() => focusComposer(next.id));
+      } else if (e.shiftKey && e.key.toLowerCase() === 'w') {
+        if (!focused) return;
+        e.preventDefault();
+        closePane(focused);
+      } else if (e.key === ',') {
         e.preventDefault();
         navigate({ name: 'settings' });
       } else if (e.key.toLowerCase() === 'n' && !e.shiftKey) {
@@ -37,7 +68,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view, state.details, state.agents, navigate, startConversation]);
+  }, [view, state, navigate, openConversation, startConversation, closePane, movePane]);
 
   // If the open conversation disappears (deleted elsewhere), fall back to home.
   const detail = view.name === 'conversation' ? state.details[view.id] : undefined;
@@ -56,7 +87,7 @@ export function App() {
       {showMain && (
       <main className="flex min-w-0 flex-1 flex-col bg-canvas">
         {view.name === 'conversation' && detail ? (
-          <ConversationView detail={detail} />
+          <Panes single={phone} />
         ) : view.name === 'library' && view.agentId === 'new' ? (
           <NewAgentScreen key={view.projectId ?? 'none'} projectId={view.projectId} />
         ) : view.name === 'project' ? (

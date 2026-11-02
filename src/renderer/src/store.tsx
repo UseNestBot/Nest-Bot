@@ -35,6 +35,13 @@ export type SettingsSection =
   | 'shortcuts'
   | 'about';
 
+/** Where to put a chat that is being opened: in the focused pane, or docked as a new pane left or right of `relativeTo` (default: the focused pane). */
+export type PanePlace = 'focus' | 'left' | 'right';
+
+/** Most chats shown side by side. */
+export const MAX_PANES = 4;
+const PANES_KEY = 'nest:panes';
+
 interface State {
   ready: boolean;
   view: View;
@@ -45,6 +52,10 @@ interface State {
   inbox: InboxItem[];
   settings: AppSettings;
   details: Record<string, ConversationDetail>;
+  /** Chats open side by side, left to right. When the view is a conversation, its id is one of these: the focused pane. */
+  panes: string[];
+  /** Flex weight per open pane (default 1), changed by dragging the dividers between panes. */
+  paneSizes: Record<string, number>;
   /** Conversations with a run in progress, tracked for every chat (not just the loaded ones) so the sidebar can show it. */
   running: Record<string, true>;
   /** Latest avatar reaction per conversation. */
@@ -63,6 +74,11 @@ type Action =
   | { type: 'inbox'; inbox: InboxItem[] }
   | { type: 'detail'; detail: ConversationDetail }
   | { type: 'drop-conversation'; id: string }
+  | { type: 'layout'; panes: string[]; paneSizes: Record<string, number> }
+  | { type: 'open-pane'; id: string; place: PanePlace; relativeTo?: string }
+  | { type: 'close-pane'; id: string }
+  | { type: 'move-pane'; id: string; by: -1 | 1 }
+  | { type: 'resize-panes'; sizes: Record<string, number> }
   | { type: 'event'; event: NestEvent }
   | { type: 'toast'; text: string; tone: 'error' | 'info' }
   | { type: 'clear-toast'; id: number };
@@ -138,6 +154,46 @@ function applyEvent(state: State, event: NestEvent): State {
   }
 }
 
+/** The focused pane, or the last pane while another screen (Settings, Inbox…) is showing. */
+export function focusedPane(state: Pick<State, 'view' | 'panes'>): string | undefined {
+  return state.view.name === 'conversation' && state.panes.includes(state.view.id) ? state.view.id : state.panes[state.panes.length - 1];
+}
+
+function openPane(state: State, id: string, place: PanePlace, relativeTo?: string): State {
+  const focused = focusedPane(state);
+  let panes = state.panes.slice();
+  if (place === 'focus') {
+    // Already open somewhere: just focus it. Otherwise it takes over the focused pane.
+    if (!panes.includes(id)) {
+      const i = focused ? panes.indexOf(focused) : -1;
+      if (i === -1) panes.push(id);
+      else panes[i] = id;
+    }
+  } else {
+    const anchor = relativeTo ?? focused;
+    if (anchor === id) return { ...state, view: { name: 'conversation', id } };
+    panes = panes.filter((p) => p !== id);
+    const i = anchor ? panes.indexOf(anchor) : -1;
+    if (i === -1) panes.push(id);
+    else panes.splice(place === 'left' ? i : i + 1, 0, id);
+    if (panes.length > MAX_PANES) return state;
+  }
+  return { ...state, panes, view: { name: 'conversation', id } };
+}
+
+/** Take a chat out of the layout. If it was focused, its neighbour takes focus, or home when it was the last one. */
+function closePane(state: State, id: string): State {
+  const i = state.panes.indexOf(id);
+  if (i === -1) return state;
+  const panes = state.panes.filter((p) => p !== id);
+  const paneSizes = { ...state.paneSizes };
+  delete paneSizes[id];
+  const wasFocused = state.view.name === 'conversation' && state.view.id === id;
+  const next = panes[Math.min(i, panes.length - 1)];
+  const view: View = wasFocused ? (next ? { name: 'conversation', id: next } : { name: 'home' }) : state.view;
+  return { ...state, panes, paneSizes, view };
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'init':
@@ -182,8 +238,26 @@ function reducer(state: State, action: Action): State {
       delete details[action.id];
       const running = { ...state.running };
       delete running[action.id];
-      return { ...state, details, running, conversations: state.conversations.filter((c) => c.id !== action.id) };
+      const closed = closePane(state, action.id);
+      const view = closed.view.name === 'conversation' && closed.view.id === action.id ? { name: 'home' as const } : closed.view;
+      return { ...closed, view, details, running, conversations: state.conversations.filter((c) => c.id !== action.id) };
     }
+    case 'layout':
+      return { ...state, panes: action.panes, paneSizes: action.paneSizes };
+    case 'open-pane':
+      return openPane(state, action.id, action.place, action.relativeTo);
+    case 'close-pane':
+      return closePane(state, action.id);
+    case 'move-pane': {
+      const i = state.panes.indexOf(action.id);
+      const j = i + action.by;
+      if (i === -1 || j < 0 || j >= state.panes.length) return state;
+      const panes = state.panes.slice();
+      [panes[i], panes[j]] = [panes[j], panes[i]];
+      return { ...state, panes };
+    }
+    case 'resize-panes':
+      return { ...state, paneSizes: { ...state.paneSizes, ...action.sizes } };
     case 'event':
       return applyEvent(state, action.event);
     case 'toast':
@@ -193,12 +267,18 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-const initial: State = { ready: false, view: { name: 'home' }, agents: [], projects: [], conversations: [], statuses: {}, inbox: [], settings: DEFAULT_SETTINGS, details: {}, running: {}, reactions: {}, toast: null };
+const initial: State = { ready: false, view: { name: 'home' }, agents: [], projects: [], conversations: [], statuses: {}, inbox: [], settings: DEFAULT_SETTINGS, details: {}, panes: [], paneSizes: {}, running: {}, reactions: {}, toast: null };
 
 interface StoreValue {
   state: State;
   navigate: (view: View) => void;
-  openConversation: (id: string) => Promise<void>;
+  /** Open a chat in the focused pane, or dock it as a new pane left or right of `relativeTo` (default: the focused pane). */
+  openConversation: (id: string, place?: PanePlace, relativeTo?: string) => Promise<void>;
+  /** Close a pane. Closing the last one goes home. */
+  closePane: (id: string) => void;
+  /** Swap a pane with its left (-1) or right (+1) neighbour. */
+  movePane: (id: string, by: -1 | 1) => void;
+  resizePanes: (sizes: Record<string, number>) => void;
   /** projectId: the project the chat works on; omitted or null = none. */
   startConversation: (agentId: string, projectId?: string | null) => Promise<void>;
   reloadAgents: () => Promise<void>;
@@ -209,6 +289,19 @@ interface StoreValue {
   toast: (text: string, tone?: 'error' | 'info') => void;
   /** Run an API call and surface its error as a toast instead of throwing. */
   attempt: <T>(fn: () => Promise<T>) => Promise<T | undefined>;
+}
+
+function loadLayout(): { panes: string[]; paneSizes: Record<string, number> } | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PANES_KEY) ?? 'null') as { panes?: unknown; paneSizes?: unknown } | null;
+    if (!raw || !Array.isArray(raw.panes)) return null;
+    const panes = raw.panes.filter((id): id is string => typeof id === 'string').slice(0, MAX_PANES);
+    const sizes = raw.paneSizes && typeof raw.paneSizes === 'object' ? (raw.paneSizes as Record<string, unknown>) : {};
+    const paneSizes = Object.fromEntries(Object.entries(sizes).filter((e): e is [string, number] => typeof e[1] === 'number' && e[1] > 0));
+    return { panes, paneSizes };
+  } catch {
+    return null;
+  }
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -251,9 +344,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (fromLink) history.replaceState(null, '', location.pathname);
       const target = fromLink ? conversations.find((c) => c.id === fromLink) : IS_REMOTE ? undefined : (conversations.find((c) => c.id === last) ?? conversations[0]);
       if (target) {
-        const detail = await api.getConversation(target.id);
-        if (detail && alive) {
-          dispatch({ type: 'detail', detail });
+        // Bring back the side-by-side layout the chat was part of, minus any chats deleted since.
+        const saved = IS_REMOTE ? null : loadLayout();
+        const known = new Set(conversations.map((c) => c.id));
+        const savedPanes = saved?.panes.filter((id) => known.has(id)) ?? [];
+        const panes = savedPanes.includes(target.id) ? savedPanes : [target.id];
+        const details = await Promise.all(panes.map((id) => api.getConversation(id).catch(() => null)));
+        if (!alive) return;
+        for (const detail of details) if (detail) dispatch({ type: 'detail', detail });
+        const loaded = panes.filter((_, i) => details[i]);
+        if (loaded.includes(target.id)) {
+          dispatch({ type: 'layout', panes: loaded, paneSizes: saved?.paneSizes ?? {} });
           dispatch({ type: 'view', view: { name: 'conversation', id: target.id } });
         }
       }
@@ -273,8 +374,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // The phone's event stream reconnected: fetch again whatever changed while it was away.
-  const viewRef = useRef(state.view);
-  viewRef.current = state.view;
+  const panesRef = useRef(state.panes);
+  panesRef.current = state.panes;
   useEffect(() => {
     const resync = () => {
       void Promise.all([api.listAgents(), api.listProjects(), api.listConversations(), api.listInbox()])
@@ -285,8 +386,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'inbox', inbox });
         })
         .catch(() => {});
-      const view = viewRef.current;
-      if (view.name === 'conversation') void api.getConversation(view.id).then((detail) => detail && dispatch({ type: 'detail', detail })).catch(() => {});
+      for (const id of panesRef.current) void api.getConversation(id).then((detail) => detail && dispatch({ type: 'detail', detail })).catch(() => {});
     };
     window.addEventListener(RESYNC_EVENT, resync);
     return () => window.removeEventListener(RESYNC_EVENT, resync);
@@ -323,20 +423,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(t);
   }, [state.toast]);
 
+  // The layout survives a restart.
+  useEffect(() => {
+    if (!state.ready || IS_REMOTE) return;
+    try {
+      const paneSizes = Object.fromEntries(Object.entries(state.paneSizes).filter(([id]) => state.panes.includes(id)));
+      localStorage.setItem(PANES_KEY, JSON.stringify({ panes: state.panes, paneSizes }));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [state.ready, state.panes, state.paneSizes]);
+
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const openRef = useRef<((id: string) => Promise<void>) | null>(null);
   const openConversation = useCallback(
-    async (id: string) => {
-      const detail = await attempt(() => api.getConversation(id));
-      if (!detail) return;
-      dispatch({ type: 'detail', detail });
-      dispatch({ type: 'view', view: { name: 'conversation', id } });
+    async (id: string, place: PanePlace = 'focus', relativeTo?: string) => {
+      const { panes, details } = stateRef.current;
+      if (place !== 'focus' && !panes.includes(id) && panes.length >= MAX_PANES) {
+        toast(`Up to ${MAX_PANES} chats fit side by side. Close one first.`, 'info');
+        return;
+      }
+      // An open pane already has its chat loaded and kept live by events.
+      if (!panes.includes(id) || !details[id]) {
+        const detail = await attempt(() => api.getConversation(id));
+        if (!detail) return;
+        dispatch({ type: 'detail', detail });
+      }
+      dispatch({ type: 'open-pane', id, place, relativeTo });
       try {
         localStorage.setItem('nest:last-conversation', id);
       } catch {
         /* storage unavailable */
       }
     },
-    [attempt],
+    [attempt, toast],
   );
 
   openRef.current = openConversation;
@@ -371,6 +492,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       state,
       navigate: (view) => dispatch({ type: 'view', view }),
       openConversation,
+      closePane: (id) => dispatch({ type: 'close-pane', id }),
+      movePane: (id, by) => dispatch({ type: 'move-pane', id, by }),
+      resizePanes: (sizes) => dispatch({ type: 'resize-panes', sizes }),
       startConversation,
       reloadAgents,
       reloadProjects,

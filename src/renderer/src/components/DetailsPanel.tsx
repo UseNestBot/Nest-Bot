@@ -17,7 +17,8 @@ function friendlyCadence(c: ScheduleCadence): string {
 }
 
 /** Right-hand panel for the open conversation's agent: folder, routines, instructions, memory, other chats. */
-export function DetailsPanel({ agent, conversation, onClose }: { agent: Agent; conversation: Conversation; onClose: () => void }) {
+/** floating: drawn over the chat instead of beside it (split panes; narrow windows do this through CSS). titlebar: reserve room for the window controls. */
+export function DetailsPanel({ agent, conversation, floating, titlebar = true, onClose }: { agent: Agent; conversation: Conversation; floating?: boolean; titlebar?: boolean; onClose: () => void }) {
   const { state, navigate, openConversation, startConversation, attempt } = useStore();
   const [defaultFolder, setDefaultFolder] = useState<string | null>(null);
   const [notes, setNotes] = useState<MemoryNote[]>([]);
@@ -45,7 +46,10 @@ export function DetailsPanel({ agent, conversation, onClose }: { agent: Agent; c
 
   return (
     <aside
-      className="panel-in flex h-full w-[340px] shrink-0 flex-col border-l border-line bg-canvas max-[1120px]:absolute max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-30 max-[1120px]:shadow-pop max-[640px]:w-full"
+      className={cx(
+        'panel-in flex h-full w-[340px] max-w-full shrink-0 flex-col border-l border-line bg-canvas max-[1120px]:absolute max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-30 max-[1120px]:shadow-pop max-[640px]:w-full',
+        floating && 'absolute inset-y-0 right-0 z-30 shadow-pop',
+      )}
       aria-label={`${agent.name} details`}
     >
       <div className="app-drag flex h-14 shrink-0 items-center gap-1 border-b border-line pl-5 pr-3">
@@ -56,7 +60,7 @@ export function DetailsPanel({ agent, conversation, onClose }: { agent: Agent; c
         <IconButton label="Close details" onClick={onClose}>
           <PanelRightClose size={17} strokeWidth={1.8} />
         </IconButton>
-        <div className="titlebar-spacer" />
+        {titlebar && <div className="titlebar-spacer" />}
       </div>
 
       <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto px-5 pb-10">

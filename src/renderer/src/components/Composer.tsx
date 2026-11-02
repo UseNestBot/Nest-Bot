@@ -66,7 +66,26 @@ export function permissionLabel(c: Conversation, skipping = false): string {
   return CODEX_MODES.find((m) => m.sandbox === c.permissions.codexSandbox && m.approval === c.permissions.codexApproval)?.label ?? 'Custom';
 }
 
-export function Composer({ conversation, running, disabledReason, placeholder = 'Message' }: { conversation: Conversation; running: boolean; disabledReason: string | null; placeholder?: string }) {
+/** Ask a pane's composer to take keyboard focus (after a keyboard shortcut moved focus to that pane). */
+export const FOCUS_COMPOSER_EVENT = 'nest:focus-composer';
+export function focusComposer(conversationId: string): void {
+  window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT, { detail: conversationId }));
+}
+
+/** active: the focused pane's composer. Only it takes focus on open and answers the dictation shortcut, so side-by-side chats don't all react. */
+export function Composer({
+  conversation,
+  running,
+  active = true,
+  disabledReason,
+  placeholder = 'Message',
+}: {
+  conversation: Conversation;
+  running: boolean;
+  active?: boolean;
+  disabledReason: string | null;
+  placeholder?: string;
+}) {
   const { state, attempt, navigate, toast } = useStore();
   const allowSkip = state.settings.allowSkipPermissions;
   const agent = state.agents.find((a) => a.id === conversation.agentId);
@@ -83,6 +102,8 @@ export function Composer({ conversation, running, disabledReason, placeholder = 
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const draftKey = `nest:draft:${conversation.id}`;
 
   // Drafts are a per-device convenience only.
@@ -94,8 +115,15 @@ export function Composer({ conversation, running, disabledReason, placeholder = 
     }
     setAttachments([]);
     setPreviews({});
-    ref.current?.focus();
+    if (activeRef.current) ref.current?.focus();
   }, [draftKey]);
+
+  // A keyboard shortcut moved focus to this pane.
+  useEffect(() => {
+    const onFocus = (e: Event) => (e as CustomEvent<string>).detail === conversation.id && ref.current?.focus();
+    window.addEventListener(FOCUS_COMPOSER_EVENT, onFocus);
+    return () => window.removeEventListener(FOCUS_COMPOSER_EVENT, onFocus);
+  }, [conversation.id]);
 
   useEffect(() => {
     const el = ref.current;
@@ -147,6 +175,8 @@ export function Composer({ conversation, running, disabledReason, placeholder = 
     let startedByPress = false;
     const onDown = (e: KeyboardEvent) => {
       const { dictation: d, toggle } = dictationRef.current;
+      // A recording keeps listening for its own stop and Esc even if focus moved to another pane.
+      if (!activeRef.current && d.state === 'idle') return;
       if (e.key === 'Escape' && d.state === 'recording') {
         e.preventDefault();
         d.cancel();

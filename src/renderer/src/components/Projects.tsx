@@ -25,6 +25,11 @@ export function dragChat(e: DragEvent, conversationId: string): void {
   e.dataTransfer.effectAllowed = 'move';
 }
 
+/** Whether a drag carries a chat. Readable during dragover, unlike its id. */
+export function isChatDrag(data: DataTransfer): boolean {
+  return data.types.includes(CHAT_DRAG);
+}
+
 function isNestDrag(e: DragEvent): boolean {
   return e.dataTransfer.types.includes(AGENT_DRAG) || e.dataTransfer.types.includes(CHAT_DRAG);
 }
