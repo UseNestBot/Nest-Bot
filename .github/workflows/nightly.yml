@@ -1,0 +1,89 @@
+name: Nightly
+
+# Tags main as v<version>-nightly.<date>.<build> and runs release.yml on it. The "-"
+# makes it a beta build (galaxy banner) and a GitHub prerelease, so only beta
+# and nightly installs update to it.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even if nothing changed since the last nightly'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  KEEP: 7
+
+jobs:
+  tag:
+    name: Tag nightly
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the build number is the commit count.
+          fetch-depth: 0
+
+      - name: Tag HEAD unless it's already the latest nightly
+        id: tag
+        env:
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+          last="$(git tag --list 'v*-nightly.*' --sort=-creatordate | head -n1)"
+          if [ -n "$last" ] && [ "$(git rev-parse "$last^{commit}")" = "$(git rev-parse HEAD)" ] && [ "$FORCE" != "true" ]; then
+            echo "No commits since $last, skipping."
+            exit 0
+          fi
+          version="$(jq -r .version package.json)"
+          tag="v${version}-nightly.$(date -u +%Y%m%d).$(git rev-list --count HEAD)"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists, rebuilding it."
+          else
+            git tag "$tag"
+            git push origin "refs/tags/$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    permissions:
+      contents: write
+
+  prune:
+    name: Prune old nightlies
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Keep the newest ${{ env.KEEP }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("-nightly\\."))] | sort_by(.createdAt) | reverse | .[(env.KEEP | tonumber):] | .[].tagName' |
+          while read -r tag; do
+            echo "Deleting $tag"
+            gh release delete "$tag" --cleanup-tag --yes
+          done

@@ -10,6 +10,14 @@ on:
         description: 'Existing tag to build and release (e.g. v0.1.0)'
         required: true
         type: string
+  # nightly.yml tags a commit and calls this directly: a tag pushed with
+  # GITHUB_TOKEN doesn't start other workflows on its own.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -115,11 +123,15 @@ jobs:
           else
             notes_arg=(--generate-notes)
           fi
+          # Prerelease tags must not reach stable installs (updateFeed.ts skips prereleases on stable).
+          prerelease_arg=()
+          if [[ "$TAG" == *-* ]]; then prerelease_arg=(--prerelease); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" artifacts/* --clobber
           else
             gh release create "$TAG" \
               --title "Nest ${TAG}" \
+              "${prerelease_arg[@]}" \
               "${notes_arg[@]}" \
               artifacts/*
           fi
