@@ -32,6 +32,8 @@ export interface BrowserTools {
 
 const MAX_DELEGATION_DEPTH = 3;
 const DELEGATE_WAIT_MS = 25 * 60_000;
+/** Tools that change agents or schedules ask the user even when permissions are skipped: skipping must not spread to other agents. */
+const ADMIN_ALWAYS_ASKS = true;
 const AVATAR_SHAPES = ['blob', 'square', 'diamond', 'leaf', 'pill', 'hex', 'triangle'] as const;
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -44,7 +46,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: 'remember',
-    description: 'Save a short memory note that Nest will give you in future conversations. Use for durable facts and preferences, not transient details.',
+    description: 'Save a short memory note that Nest will give you in future conversations. Use for durable facts and preferences, not transient details. Shared and project notes ask the user first.',
     inputSchema: obj(
       {
         note: { type: 'string', description: 'The fact to remember, in one or two sentences.' },
@@ -66,7 +68,7 @@ export const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: 'delegate',
-    description: 'Hand a task to another Nest agent. By default waits for its result (up to 25 minutes) and returns it; the exchange also appears in the user’s conversation.',
+    description: 'Hand a task to another Nest agent. By default waits for its result (up to 25 minutes) and returns it; the exchange also appears in the user’s conversation. Asks the user first unless permissions are skipped.',
     inputSchema: obj(
       {
         agent: { type: 'string', description: 'Name of the agent to delegate to.' },
@@ -281,6 +283,18 @@ export class NestTools {
         const note = str('note', 2000);
         if (!note) return { ok: false, text: 'note is required.' };
         if (args.project === true && !conversation.projectId) return { ok: false, text: 'This chat is not in a project. Save it for yourself, or with shared: true for every agent.' };
+        // Shared and project notes reach other agents' prompts, which may run with more access than this one.
+        if (args.shared === true || args.project === true) {
+          const choice = await this.runs.requestLocalApproval(conversationId, {
+            title: `${me.name} wants to save a memory note for ${args.shared === true ? 'every agent' : 'the project'}`,
+            action: note,
+            target: null,
+            reason: null,
+            detail: null,
+            approveLabel: 'Save note',
+          });
+          if (choice !== 'allow') return { ok: false, text: 'The user declined saving this note.' };
+        }
         const created =
           args.shared === true ? this.db.createMemory('shared', null, note, null) :
           args.project === true ? this.db.createMemory('project', conversation.projectId, note, null) :
@@ -344,6 +358,16 @@ export class NestTools {
         if (target.id === me.id) return { ok: false, text: 'You cannot delegate to yourself.' };
         if (!task) return { ok: false, text: 'task is required.' };
         if (this.runs.handoffDepth(conversationId) >= MAX_DELEGATION_DEPTH) return { ok: false, text: 'Delegation chain is too deep; do this part yourself or report back.' };
+        // The target runs with its own permissions and connectors, which may exceed this agent's.
+        const choice = await this.runs.requestLocalApproval(conversationId, {
+          title: `${me.name} wants to delegate to ${target.name}`,
+          action: task,
+          target: target.name,
+          reason: null,
+          detail: str('context', 40000) || null,
+          approveLabel: 'Delegate',
+        });
+        if (choice !== 'allow') return { ok: false, text: `The user declined delegating to ${target.name}.` };
         try {
           const handoff = await this.runs.startHandoff({ sourceConversationId: conversationId, targetAgentId: target.id, task, context: str('context', 40000) });
           if (args.wait === false) return { ok: true, text: `Started. ${target.name} is working on it; the result will be posted to this conversation.` };
@@ -379,7 +403,7 @@ export class NestTools {
           reason: null,
           detail: prompt,
           approveLabel: 'Create schedule',
-        });
+        }, ADMIN_ALWAYS_ASKS);
         if (choice !== 'allow') return { ok: false, text: 'The user declined this schedule.' };
         const s = this.scheduler.create({ agentId: agent.id, title, prompt, cadence, target: 'new', enabled: true });
         return { ok: true, text: `Created "${s.title}" (${describeCadence(s.cadence)}). Next run ${s.nextRunAt ? new Date(s.nextRunAt).toLocaleString() : 'not scheduled'}.` };
@@ -403,7 +427,7 @@ export class NestTools {
           reason: null,
           detail: instructions,
           approveLabel: 'Create agent',
-        });
+        }, ADMIN_ALWAYS_ASKS);
         if (choice !== 'allow') return { ok: false, text: 'The user declined creating this agent.' };
         const seed = [...agentName].reduce((n, c) => n + c.charCodeAt(0), 0);
         const created = this.db.createAgent({
@@ -463,7 +487,7 @@ export class NestTools {
           reason: str('reason', 500) || null,
           detail: instructions ? `New instructions:\n${instructions}\n\nCurrent instructions:\n${target.instructions}` : null,
           approveLabel: 'Apply changes',
-        });
+        }, ADMIN_ALWAYS_ASKS);
         if (choice !== 'allow') return { ok: false, text: `The user kept ${target.name} as it was.` };
         const { id: _id, createdAt: _c, updatedAt: _u, ...draft } = next;
         this.db.updateAgent(target.id, draft);
@@ -492,7 +516,7 @@ export class NestTools {
           reason: null,
           detail: `New instructions:\n${instructions}\n\nCurrent instructions:\n${me.instructions}`,
           approveLabel: 'Update instructions',
-        });
+        }, ADMIN_ALWAYS_ASKS);
         if (choice !== 'allow') return { ok: false, text: 'The user kept your current instructions.' };
         const { id: _id, createdAt: _c, updatedAt: _u, ...draft } = me;
         this.db.updateAgent(me.id, { ...draft, instructions });

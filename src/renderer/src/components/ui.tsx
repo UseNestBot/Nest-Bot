@@ -556,9 +556,18 @@ export function Modal({ title, onClose, children, footer, width = 520 }: { title
   );
 }
 
+/**
+ * A label click activates its first control. When that's a button (a segmented
+ * choice, a picker), clicking the label text would silently pick it: don't.
+ */
+function keepLabelOffButtons(e: React.MouseEvent<HTMLLabelElement>) {
+  if ((e.target as HTMLElement).closest('button, input, textarea, select, a')) return;
+  if (e.currentTarget.querySelector('button, input, textarea, select') instanceof HTMLButtonElement) e.preventDefault();
+}
+
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
-    <label className="block">
+    <label className="block" onClick={keepLabelOffButtons}>
       <span className="mb-1.5 block text-[12.5px] font-medium text-muted">{label}</span>
       {children}
       {hint && <span className="mt-1 block text-[12px] text-muted">{hint}</span>}

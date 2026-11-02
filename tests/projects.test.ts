@@ -161,7 +161,9 @@ describe('projects', () => {
 });
 
 describe('project tools', () => {
-  const tools = (db: NestDb) => new NestTools(db, {} as RunManager, {} as Scheduler, () => {});
+  // Project notes ask the user first; these tests approve.
+  const approve = { requestLocalApproval: async () => 'allow' } as unknown as RunManager;
+  const tools = (db: NestDb, runs = approve) => new NestTools(db, runs, {} as Scheduler, () => {});
 
   it('shows the project, lists teammates first, and remembers for the whole project', async () => {
     const db = open();
@@ -184,6 +186,11 @@ describe('project tools', () => {
     expect(list[1]).toMatch(/^- Accountant/);
 
     expect((await t.call(mine.id, 'remember', { note: 'Use the blue palette', project: true })).text).toMatch(/project memory note/);
+    expect(db.memoryForAgent(editor.id).map((n) => n.content)).toEqual(['Use the blue palette']);
+
+    const declining = tools(db, { requestLocalApproval: async () => 'deny' } as unknown as RunManager);
+    expect((await declining.call(mine.id, 'remember', { note: 'Use red', project: true })).ok).toBe(false);
+    expect((await declining.call(mine.id, 'remember', { note: 'I prefer short drafts' })).ok).toBe(true);
     expect(db.memoryForAgent(editor.id).map((n) => n.content)).toEqual(['Use the blue palette']);
   });
 

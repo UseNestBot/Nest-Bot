@@ -180,6 +180,7 @@ export class ClaudeProvider implements ProviderAdapter {
 
     const start = async () => {
       if (!this.exe) await this.detect();
+      if (finished) return; // Stopped while detecting
       const exe = this.exe;
       if (!exe) {
         emit({ type: 'error', message: 'Claude Code is not installed.', code: 'not-installed', fatal: true });
@@ -202,6 +203,7 @@ export class ClaudeProvider implements ProviderAdapter {
       if (input.effort) args.push('--effort', input.effort);
       if (input.instructions.trim()) args.push('--append-system-prompt', input.instructions);
       policy = input.connectors ? await input.connectors : null;
+      if (finished) return; // Stopped before the CLI started: don't run the turn unseen
       const mcpArgs = claudeMcpArgs(policy, input.mcp ?? null);
       args.push(...mcpArgs.args);
       // Nest cannot render Claude's multiple-choice question UI; Claude asks in plain text instead.
@@ -294,6 +296,12 @@ export class ClaudeProvider implements ProviderAdapter {
       child.stdin?.on('error', () => {});
       child.on('error', (err) => {
         emit({ type: 'error', message: `Claude Code process error: ${err.message}`, fatal: true });
+        // A process that never started (ENOENT, EACCES) emits no 'exit', so end the turn here.
+        if (child && child.pid === undefined) {
+          reader.end();
+          this.active.delete(child);
+          finish('failed', `Could not start Claude Code: ${err.message}`);
+        }
       });
       child.on('exit', (code) => {
         reader.end();

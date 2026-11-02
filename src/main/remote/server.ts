@@ -12,7 +12,7 @@ import { SERVICE_WORKER, webManifest } from './web';
 
 /**
  * What a paired device may not call. Native dialogs, the PC's file manager and
- * browser, updates, sign-in flows and remote access itself stay on the PC.
+ * browser, updates, sign-in flows, API keys and remote access itself stay on the PC.
  */
 export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
   'pickFolder',
@@ -22,6 +22,8 @@ export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
   'openFolder',
   'startLogin',
   'signOut',
+  'setApiKey',
+  'clearApiKey',
   'checkForUpdates',
   'installUpdate',
   'listDictationModels',
