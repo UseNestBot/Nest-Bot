@@ -1,5 +1,5 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { NestEvent, TerminalStateInfo } from '@shared/types';
@@ -12,10 +12,11 @@ const READY_TIMEOUT_MS = 10_000;
 
 /**
  * The shell reports every prompt with this invisible escape sequence (an OSC
- * the terminal ignores), carrying the last exit code. It is how Nest knows a
- * command finished and the terminal is free again.
+ * the terminal ignores), carrying the last exit code and, from PowerShell, the
+ * current folder. It is how Nest knows a command finished and the terminal is
+ * free again.
  */
-const MARKER_RE = /\x1b\]777;nest;(-?\d+)\x07/g;
+const MARKER_RE = /\x1b\]777;nest;(-?\d+)(?:;([^\x07\x1b]*))?\x07/g;
 const MARKER_PREFIX = '\x1b]777;nest;';
 
 // Gives the shell a real pseudo-terminal (colours, line editing, full-screen
@@ -61,7 +62,7 @@ PROMPT_COMMAND="__nest_prompt\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 
 const POWERSHELL_INIT =
   'function __nest_p { $c = if ($?) { 0 } else { 1 }; if ($global:LASTEXITCODE) { $c = $global:LASTEXITCODE }; $global:LASTEXITCODE = 0; ' +
-  '[Console]::Out.Write("$([char]27)]777;nest;$c$([char]7)PS $($PWD.Path)> ") }\n__nest_p\n';
+  '[Console]::Out.Write("$([char]27)]777;nest;$c;$($PWD.ProviderPath)$([char]7)PS $($PWD.Path)> ") }\n__nest_p\n';
 
 const ANSI_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]|\x1b[()][0-9A-Za-z]/g;
 
@@ -97,6 +98,26 @@ function bash(): string | null {
   return null;
 }
 
+/** Direct children of a Windows process, except its console host. */
+function windowsChildren(pid: number): Promise<number[]> {
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}' | Where-Object Name -ne 'conhost.exe' | ForEach-Object ProcessId`],
+      { windowsHide: true, timeout: 15_000 },
+      (err, stdout) => resolve(err ? [] : stdout.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 0)),
+    );
+  });
+}
+
+/** Kill a Windows process and everything it started. */
+function killTree(pid: number): void {
+  spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore', timeout: 15_000 });
+}
+
+/** How long a pipes-mode Ctrl-C waits for the command to end before restarting the shell. */
+const INTERRUPT_GRACE_MS = 1500;
+
 interface Waiter {
   /** The exit code and where the prompt began in the output, or null on timeout or exit. */
   resolve: (res: { code: number; at: number } | null) => void;
@@ -110,6 +131,8 @@ interface Session {
   pty: boolean;
   shell: string;
   cwd: string;
+  /** The folder at the last prompt (PowerShell reports it); a restarted shell starts here. */
+  cwdNow: string;
   /** Output since the start, trimmed from the front; `base` is how many characters were dropped. */
   buffer: string;
   base: number;
@@ -161,14 +184,17 @@ export class TerminalHost {
 
   private rc(): string {
     if (!this.rcFile) {
-      this.rcFile = path.join(os.tmpdir(), `nest-terminal-${process.pid}.bashrc`);
-      writeFileSync(this.rcFile, BASH_RC, { mode: 0o600 });
+      // A private folder (random name, owner-only) so no one else on the machine can plant or swap the file bash runs.
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'nest-terminal-'));
+      this.rcFile = path.join(dir, 'bashrc');
+      writeFileSync(this.rcFile, BASH_RC, { mode: 0o600, flag: 'wx' });
     }
     return this.rcFile;
   }
 
-  private spawn(conversationId: string, cols: number, rows: number): Session {
-    const cwd = this.cwdFor(conversationId);
+  /** `from`: a stuck session being replaced; the new shell starts in its folder and keeps its output. */
+  private spawn(conversationId: string, cols: number, rows: number, from?: Session): Session {
+    const cwd = from?.cwdNow ?? this.cwdFor(conversationId);
     const env: NodeJS.ProcessEnv = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', NEST_TERMINAL: '1' };
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.ELECTRON_RENDERER_URL;
@@ -192,7 +218,7 @@ export class TerminalHost {
     } else {
       throw new Error('No bash found for the terminal.');
     }
-    const s: Session = { conversationId, proc, pty, shell, cwd, buffer: '', base: 0, carry: '', written: 0, ready: false, busy: false, lastExit: null, action: null, line: '', waiters: [] };
+    const s: Session = { conversationId, proc, pty, shell, cwd, cwdNow: cwd, buffer: from?.buffer ?? '', base: from?.base ?? 0, carry: '', written: from?.written ?? 0, ready: false, busy: false, lastExit: null, action: null, line: '', waiters: [] };
     this.sessions.set(conversationId, s);
     proc.stdout?.setEncoding('utf8');
     proc.stderr?.setEncoding('utf8');
@@ -225,7 +251,7 @@ export class TerminalHost {
     const tail = text.lastIndexOf('\x1b');
     if (tail >= 0 && !text.includes('\x07', tail)) {
       const rest = text.slice(tail);
-      if (MARKER_PREFIX.startsWith(rest) || (rest.startsWith(MARKER_PREFIX) && rest.length < MARKER_PREFIX.length + 8)) {
+      if (MARKER_PREFIX.startsWith(rest) || (rest.startsWith(MARKER_PREFIX) && rest.length < MARKER_PREFIX.length + 4096)) {
         s.carry = rest;
         text = text.slice(0, tail);
       }
@@ -237,7 +263,7 @@ export class TerminalHost {
       this.append(s, text.slice(last, m.index));
       last = m.index + m[0].length;
       prompted = true;
-      this.prompt(s, Number(m[1]));
+      this.prompt(s, Number(m[1]), m[2]);
     }
     this.append(s, text.slice(last));
     if (prompted) this.announce(s);
@@ -255,8 +281,9 @@ export class TerminalHost {
     this.broadcast({ type: 'terminal-data', conversationId: s.conversationId, data: text });
   }
 
-  private prompt(s: Session, code: number): void {
+  private prompt(s: Session, code: number, cwd?: string): void {
     const first = !s.ready;
+    if (cwd) s.cwdNow = cwd;
     s.ready = true;
     s.busy = false;
     s.action = null;
@@ -303,6 +330,7 @@ export class TerminalHost {
       } else if (ch === '\x03') {
         s.line = '';
         this.append(s, '^C\r\n');
+        this.interrupt(s);
       } else if (ch >= ' ' || ch === '\t') {
         s.line += ch;
         this.append(s, ch);
@@ -327,18 +355,63 @@ export class TerminalHost {
     if (ctl && cols > 0 && rows > 0) ctl.write(`${Math.round(cols)} ${Math.round(rows)}\n`);
   }
 
-  close(conversationId: string): void {
-    const s = this.sessions.get(conversationId);
-    if (!s) return;
+  /**
+   * Ctrl-C without a real terminal, where the shell can't be signalled through
+   * its pipes: stop what the running command started. On Windows, a PowerShell
+   * built-in (Start-Sleep, a loop) runs inside the shell itself, so if the
+   * command is still going after a moment the shell is restarted in its folder.
+   */
+  private interrupt(s: Session): void {
+    if (!s.busy || !s.proc.pid) return;
+    if (process.platform !== 'win32') {
+      execFile('pkill', ['-INT', '-P', String(s.proc.pid)], () => {});
+      return;
+    }
+    const pid = s.proc.pid;
+    void windowsChildren(pid).then(async (children) => {
+      for (const child of children) killTree(child);
+      await new Promise((r) => setTimeout(r, INTERRUPT_GRACE_MS));
+      if (this.sessions.get(s.conversationId) === s && s.busy) this.restart(s);
+    });
+  }
+
+  /** Replace a stuck shell with a fresh one in the same folder, keeping the output so far. */
+  private restart(s: Session): void {
+    // Out of the map first, so the old shell's exit doesn't report the terminal as closed.
+    this.sessions.delete(s.conversationId);
+    for (const w of s.waiters.splice(0)) {
+      clearTimeout(w.timer);
+      w.resolve(null);
+    }
+    this.kill(s);
+    const next = this.spawn(s.conversationId, 120, 30, s);
+    this.append(next, `[Nest] PowerShell can't interrupt a built-in command without a real console, so the shell was restarted in ${next.cwd}. Variables set before are gone.\r\n`);
+  }
+
+  private kill(s: Session): void {
     s.proc.stdin?.end();
+    // On Windows, killing powershell.exe alone leaves whatever it started running.
+    if (process.platform === 'win32' && s.proc.pid) {
+      killTree(s.proc.pid);
+      return;
+    }
     s.proc.kill();
     setTimeout(() => {
       if (s.proc.exitCode === null && s.proc.signalCode === null) s.proc.kill('SIGKILL');
     }, 2000);
   }
 
+  close(conversationId: string): void {
+    const s = this.sessions.get(conversationId);
+    if (s) this.kill(s);
+  }
+
   closeAll(): void {
     for (const id of [...this.sessions.keys()]) this.close(id);
+    if (this.rcFile) {
+      rmSync(path.dirname(this.rcFile), { recursive: true, force: true });
+      this.rcFile = null;
+    }
   }
 
   /** Recent output as plain text, for the agent. */
@@ -394,6 +467,7 @@ export class TerminalHost {
     if (out.length > RESULT_CHARS) out = `…(${out.length - RESULT_CHARS} earlier characters cut)\n${out.slice(-RESULT_CHARS)}`;
     if (!res) {
       if (!this.sessions.has(conversationId)) return { ok: false, text: `The terminal closed.\n\n${out}` };
+      if (this.sessions.get(conversationId) !== s) return { ok: false, text: `The command was stopped and the terminal restarted.\n\n${out}` };
       return { ok: true, text: `Still running after ${Math.round(timeoutMs / 1000)}s (it keeps running in the terminal; the user can see it). Use terminal_read to check on it, or terminal_send_keys with "\\u0003" to stop it.\n\n${out}` };
     }
     return { ok: true, text: `Exit code ${res.code}\n\n${out || '(no output)'}` };
@@ -408,6 +482,8 @@ export class TerminalHost {
       s.proc.stdin?.write(keys.replace(/\n/g, '\r'));
     } else {
       this.input(conversationId, keys);
+      if (keys.includes('\u0003') && process.platform === 'win32')
+        return 'Sent Ctrl-C. Nest stops what the command started; if it was a PowerShell built-in, the shell restarts in the same folder (variables are lost). Use terminal_read to see the result.';
     }
     return 'Sent. Use terminal_read to see the result.';
   }
