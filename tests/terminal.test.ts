@@ -57,7 +57,8 @@ describe.skipIf(process.platform === 'win32')('TerminalHost', () => {
 // Windows has no pty without a native module: PowerShell over pipes, with Nest handling Ctrl-C itself.
 describe.runIf(process.platform === 'win32')('TerminalHost on Windows', () => {
   const events: NestEvent[] = [];
-  const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'nest-term-')));
+  // .native expands 8.3 short names (C:\Users\RUNNER~1) to the long path the shell reports.
+  const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'nest-term-')));
   const host = new TerminalHost((e) => events.push(e), () => dir);
   afterEach(() => host.closeAll());
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));

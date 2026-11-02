@@ -8,7 +8,8 @@ import type { NestEvent, TerminalStateInfo } from '@shared/types';
 const BUFFER_CHARS = 200_000;
 /** Most output one terminal_run returns to the model (the tail is kept). */
 const RESULT_CHARS = 30_000;
-const READY_TIMEOUT_MS = 10_000;
+// PowerShell can take well over 10s to cold-start on a busy Windows machine.
+const READY_TIMEOUT_MS = 30_000;
 
 /**
  * The shell reports every prompt with this invisible escape sequence (an OSC
