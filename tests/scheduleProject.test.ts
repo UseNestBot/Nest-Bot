@@ -30,6 +30,9 @@ function boot() {
   const tools = new NestTools(db, runs, scheduler, (what = 'agents') => changed.push(what));
   cleanups.push(async () => {
     scheduler.stop();
+    // Let runs finish writing before the db closes: on Windows the provider's exit event can land after dispose.
+    await runs.cancelAll();
+    for (let i = 0; i < 400 && db.listConversations().some((c) => runs.isRunning(c.id)); i++) await new Promise((r) => setTimeout(r, 25));
     await claude.dispose();
     await codex.dispose();
     db.close();
