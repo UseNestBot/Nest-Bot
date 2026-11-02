@@ -259,7 +259,7 @@ describe.skipIf(!live.length)('live connectors', () => {
     // Every other server a session loads, including ones `claude mcp list` doesn't report.
     const others = inv.connectors.filter((c) => c !== only && !c.id.startsWith('plugin:'));
     const agent = app.db.createAgent({ ...base, name: 'Restricted', provider: 'claude' });
-    app.db.setAgentAccess(agent.id, { claudeConnectors: [only.id], codexConnectors: null, browser: false, browserMode: 'nest' });
+    app.db.setAgentAccess(agent.id, { claudeConnectors: [only.id], codexConnectors: null, browser: false, browserMode: 'nest', terminal: false });
     const conv = app.db.createConversation(agent);
     const names = [only, ...others].map((c) => c.id);
     const prompt = `Use your tool search to look for tools from each of these MCP servers: ${names.join(', ')}. Do NOT call any of the tools you find. Reply with only a JSON object mapping each of those exact server names to true if you found at least one of its tools, false otherwise.`;
@@ -278,7 +278,7 @@ describe.skipIf(!live.length)('live connectors', () => {
   it.skipIf(!live.includes('claude'))('a Claude agent with the browser on reads a web page through Claude in Chrome', { timeout: 300_000 }, async () => {
     const app = boot(path.join(dir, 'browser-claude.sqlite'));
     const agent = app.db.createAgent({ ...base, name: 'Browser', provider: 'claude' });
-    app.db.setAgentAccess(agent.id, { claudeConnectors: [], codexConnectors: null, browser: true, browserMode: 'chrome' });
+    app.db.setAgentAccess(agent.id, { claudeConnectors: [], codexConnectors: null, browser: true, browserMode: 'chrome', terminal: false });
     const conv = app.db.createConversation(agent);
     const { runId } = await app.runs.send(conv.id, 'Using the browser (Claude in Chrome), open https://example.com in a new tab and reply with only the main heading text on the page. Do not use any other tool to fetch it.', []);
     const approved = new Set<string>();
@@ -311,7 +311,7 @@ describe.skipIf(!live.length)('live connectors', () => {
     const only = apps.find((c) => c.name === 'Gmail') ?? apps[0];
     const others = [apps.find((c) => c !== only)!, ...servers.slice(0, 1)];
     const agent = app.db.createAgent({ ...base, name: 'Restricted', provider: 'codex' });
-    app.db.setAgentAccess(agent.id, { claudeConnectors: null, codexConnectors: [only.id], browser: false, browserMode: 'nest' });
+    app.db.setAgentAccess(agent.id, { claudeConnectors: null, codexConnectors: [only.id], browser: false, browserMode: 'nest', terminal: false });
     const conv = app.db.createConversation(agent);
     const names = [only, ...others].map((c) => c.name);
     const prompt = `Use your tool search / tool discovery to look for tools for each of: ${names.join(', ')}. Do NOT call any of the tools you find. Reply with only a JSON object mapping each of those exact names to true if you found at least one tool for it, false otherwise.`;

@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowDown, BookmarkPlus, Check, Copy, CornerDownRight, ExternalLink, FileText, Image as ImageIcon, Info, MoreHorizontal, PanelRight, Send, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowLeftToLine, ArrowRightToLine, BookmarkPlus, Check, Copy, CornerDownRight, ExternalLink, FileText, GripVertical, Image as ImageIcon, Info, MoreHorizontal, PanelRight, Send, SquareTerminal, Trash2, X } from 'lucide-react';
 import type { Agent, Attachment, ConversationDetail, Message, Run } from '@shared/types';
 import { PROVIDER_LABEL } from '@shared/types';
-import { api } from '../api';
+import { api, IS_REMOTE } from '../api';
 import { useStore } from '../store';
 import { compactNumber, duration, stampTime, statusLabel } from '../format';
 import { ActivityGroup, ApprovalCard } from './Activity';
@@ -11,9 +11,11 @@ import { BrowserViewport } from './BrowserViewport';
 import { Composer } from './Composer';
 import { DetailsPanel } from './DetailsPanel';
 import { Markdown } from './Markdown';
+import { TerminalPanel, useTerminalPanel } from './TerminalPanel';
 import { Button, Field, IconButton, MenuItem, Modal, Popover, Segmented, Tooltip, cx, inputClass } from './ui';
 import { confirmDialog } from './confirm';
 import { MobileBack, useMediaQuery } from './MobileBack';
+import { dragChat } from './Projects';
 
 const DETAILS_KEY = 'nest:details-open';
 /** Below this width the details panel floats over the transcript (see DetailsPanel). */
@@ -21,10 +23,10 @@ const NARROW_QUERY = '(max-width: 1119px)';
 
 /**
  * On wide windows the details panel sits beside the chat and remembers whether it was open.
- * On narrow ones it floats over the chat, so it starts closed and the choice isn't saved.
+ * On narrow ones, and in a split pane, it floats over the chat, so it starts closed and the choice isn't saved.
  */
-function useDetailsOpen(conversationId: string): [boolean, (open: boolean) => void] {
-  const narrow = useMediaQuery(NARROW_QUERY);
+function useDetailsOpen(conversationId: string, split: boolean): [boolean, (open: boolean) => void, boolean] {
+  const narrow = useMediaQuery(NARROW_QUERY) || split;
   const [docked, setDocked] = useState(() => {
     try {
       const saved = localStorage.getItem(DETAILS_KEY);
@@ -45,10 +47,20 @@ function useDetailsOpen(conversationId: string): [boolean, (open: boolean) => vo
       /* ignore */
     }
   };
-  return [narrow ? floating : docked, set];
+  return [narrow ? floating : docked, set, narrow];
 }
 
-export function ConversationView({ detail }: { detail: ConversationDetail }) {
+/** Where a conversation sits among the chats open side by side. */
+export interface PaneInfo {
+  split: boolean;
+  focused: boolean;
+  first: boolean;
+  last: boolean;
+}
+
+const SOLO: PaneInfo = { split: false, focused: true, first: true, last: true };
+
+export function ConversationView({ detail, pane = SOLO }: { detail: ConversationDetail; pane?: PaneInfo }) {
   const { state } = useStore();
   const { conversation } = detail;
   const agent = state.agents.find((a) => a.id === conversation.agentId) ?? null;
@@ -60,16 +72,18 @@ export function ConversationView({ detail }: { detail: ConversationDetail }) {
       : null;
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [remember, setRemember] = useState<Message | null>(null);
-  const [detailsOpen, setDetailsOpen] = useDetailsOpen(conversation.id);
+  const [detailsOpen, setDetailsOpen, detailsFloat] = useDetailsOpen(conversation.id, pane.split);
+  const [terminalOpen, setTerminalOpen] = useTerminalPanel(conversation.id);
 
   return (
     <div className="relative flex h-full min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <ConversationHeader detail={detail} agent={agent} onHandoff={() => setHandoffOpen(true)} detailsOpen={detailsOpen} onToggleDetails={() => setDetailsOpen(!detailsOpen)} />
+        <ConversationHeader detail={detail} agent={agent} pane={pane} onHandoff={() => setHandoffOpen(true)} detailsOpen={detailsOpen} detailsFloat={detailsFloat} onToggleDetails={() => setDetailsOpen(!detailsOpen)} terminalOpen={terminalOpen} onToggleTerminal={() => setTerminalOpen(!terminalOpen)} />
         <Transcript detail={detail} agent={agent} onRemember={setRemember} />
-        <Composer conversation={conversation} running={running} disabledReason={disabledReason} placeholder={`Message ${agent?.name ?? 'agent'}`} />
+        {terminalOpen && <TerminalPanel conversationId={conversation.id} agent={agent} onClose={() => setTerminalOpen(false)} />}
+        <Composer conversation={conversation} running={running} active={pane.focused} disabledReason={disabledReason} placeholder={`Message ${agent?.name ?? 'agent'}`} />
       </div>
-      {detailsOpen && agent && <DetailsPanel agent={agent} conversation={conversation} onClose={() => setDetailsOpen(false)} />}
+      {detailsOpen && agent && <DetailsPanel agent={agent} conversation={conversation} floating={detailsFloat} titlebar={pane.last} onClose={() => setDetailsOpen(false)} />}
       {handoffOpen && <HandoffDialog detail={detail} onClose={() => setHandoffOpen(false)} />}
       {remember && agent && <RememberDialog message={remember} agent={agent} onClose={() => setRemember(null)} />}
     </div>
@@ -79,17 +93,26 @@ export function ConversationView({ detail }: { detail: ConversationDetail }) {
 function ConversationHeader({
   detail,
   agent,
+  pane,
   onHandoff,
   detailsOpen,
+  detailsFloat,
   onToggleDetails,
+  terminalOpen,
+  onToggleTerminal,
 }: {
   detail: ConversationDetail;
   agent: Agent | null;
+  pane: PaneInfo;
   onHandoff: () => void;
   detailsOpen: boolean;
+  /** The details panel floats over the chat rather than taking the header's right edge. */
+  detailsFloat: boolean;
   onToggleDetails: () => void;
+  terminalOpen: boolean;
+  onToggleTerminal: () => void;
 }) {
-  const { state, attempt, navigate, removeConversation } = useStore();
+  const { state, attempt, navigate, removeConversation, closePane, movePane } = useStore();
   const { conversation } = detail;
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState(conversation.title);
@@ -102,6 +125,18 @@ function ConversationHeader({
   return (
     <header className="app-drag flex h-14 shrink-0 items-center gap-2 border-b border-line pl-5 pr-3 max-[640px]:gap-1 max-[640px]:pl-4 max-[640px]:pr-2">
       <MobileBack />
+      {pane.split && (
+        <Tooltip label="Drag to dock somewhere else" align="start">
+          <button
+            draggable
+            onDragStart={(e) => dragChat(e, conversation.id)}
+            aria-label="Drag to dock somewhere else"
+            className="-ml-3 flex h-7 w-4 shrink-0 cursor-grab items-center justify-center rounded text-faint hover:text-ink active:cursor-grabbing"
+          >
+            <GripVertical size={14} />
+          </button>
+        </Tooltip>
+      )}
       <Tooltip label={detailsOpen ? 'Hide details' : 'Show details'} align="start">
         <button onClick={onToggleDetails} className="flex shrink-0 items-center gap-2.5 rounded-xl py-1 pr-1.5">
           {agent && <Avatar spec={agent.avatar} size={28} working={Boolean(state.running[conversation.id])} reaction={state.reactions[conversation.id]} />}
@@ -152,6 +187,11 @@ function ConversationHeader({
       <IconButton label="Hand a task to another agent" onClick={onHandoff}>
         <Send size={16} strokeWidth={1.8} />
       </IconButton>
+      {!IS_REMOTE && (
+        <IconButton label={terminalOpen ? 'Hide terminal' : 'Show terminal'} tip={terminalOpen ? 'Hide terminal' : 'Terminal (shared with the agent)'} onClick={onToggleTerminal} className={cx(terminalOpen && 'bg-hover text-ink')} aria-pressed={terminalOpen}>
+          <SquareTerminal size={16} strokeWidth={1.8} />
+        </IconButton>
+      )}
       <IconButton label={detailsOpen ? 'Hide details' : 'Show details'} onClick={onToggleDetails} className={cx(detailsOpen && 'bg-hover text-ink')} aria-pressed={detailsOpen}>
         <PanelRight size={17} strokeWidth={1.8} />
       </IconButton>
@@ -184,13 +224,32 @@ function ConversationHeader({
                 Edit agent
               </MenuItem>
             )}
+            {pane.split && !pane.first && (
+              <MenuItem
+                onClick={() => {
+                  close();
+                  movePane(conversation.id, -1);
+                }}
+              >
+                <ArrowLeftToLine size={14} /> Move left
+              </MenuItem>
+            )}
+            {pane.split && !pane.last && (
+              <MenuItem
+                onClick={() => {
+                  close();
+                  movePane(conversation.id, 1);
+                }}
+              >
+                <ArrowRightToLine size={14} /> Move right
+              </MenuItem>
+            )}
             <MenuItem
               onClick={async () => {
                 close();
                 if (!(await confirmDialog({ title: 'Delete this conversation?', message: 'Its history is removed from Nest. Provider-side session files are not touched.', confirmLabel: 'Delete', tone: 'danger' }))) return;
                 await attempt(() => api.deleteConversation(conversation.id));
                 removeConversation(conversation.id);
-                navigate({ name: 'home' });
               }}
             >
               <Trash2 size={14} className="text-bad" />
@@ -199,7 +258,12 @@ function ConversationHeader({
           </>
         )}
       </Popover>
-      {!detailsOpen && <div className="titlebar-spacer" />}
+      {pane.split && (
+        <IconButton label="Close pane" onClick={() => closePane(conversation.id)}>
+          <X size={16} strokeWidth={1.8} />
+        </IconButton>
+      )}
+      {pane.last && (!detailsOpen || detailsFloat) && <div className="titlebar-spacer" />}
     </header>
   );
 }

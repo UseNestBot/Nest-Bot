@@ -374,6 +374,9 @@ export type NestEvent =
   | { type: 'browser-state'; state: BrowserStateInfo }
   /** A JPEG data URL of the agent's browser, sent only while a viewport watches it. */
   | { type: 'browser-frame'; agentId: string; data: string }
+  | { type: 'terminal-state'; state: TerminalStateInfo }
+  /** Output from a conversation's shared terminal (raw, with escape codes). */
+  | { type: 'terminal-data'; conversationId: string; data: string }
   | { type: 'update'; state: UpdateState }
   /** Remote access changed (a phone paired, a device was removed, the server started or stopped). */
   | { type: 'remote-changed' };
@@ -493,6 +496,8 @@ export interface AppSettings {
   allowSkipPermissions: boolean;
   /** With skipping allowed: every agent skips unless it (or a conversation) is set to always ask. */
   skipPermissionsByDefault: boolean;
+  /** On by default: an agent's terminal commands and keystrokes wait for approval even when it skips permissions. */
+  terminalAlwaysAsk: boolean;
   // Context
   /** Max characters of transcript transferred when switching provider or handing off. */
   transferBudgetChars: number;
@@ -529,6 +534,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   allowApiKeyBilling: false,
   allowSkipPermissions: false,
   skipPermissionsByDefault: false,
+  terminalAlwaysAsk: true,
   transferBudgetChars: 8000,
   claudePath: null,
   codexPath: null,
@@ -590,6 +596,11 @@ export interface Schedule {
   /** 'new' starts a fresh conversation each run; 'same' keeps appending to one. */
   target: 'new' | 'same';
   conversationId: string | null;
+  /**
+   * The project each run works in: its chats appear there and use the project's
+   * brief, memory, teammates and shared folder. Defaults to the agent's project.
+   */
+  projectId: string | null;
   enabled: boolean;
   nextRunAt: number | null;
   lastRunAt: number | null;
@@ -599,7 +610,8 @@ export interface Schedule {
   updatedAt: number;
 }
 
-export type ScheduleDraft = Pick<Schedule, 'agentId' | 'title' | 'prompt' | 'cadence' | 'target' | 'enabled'>;
+/** projectId omitted: keep the schedule's project (or, for a new one, use the agent's). null: no project. */
+export type ScheduleDraft = Pick<Schedule, 'agentId' | 'title' | 'prompt' | 'cadence' | 'target' | 'enabled'> & { projectId?: string | null };
 
 // ---------------------------------------------------------------------------
 // Connectors (MCP servers and apps the providers already have) and browser use.
@@ -651,11 +663,13 @@ export interface AgentAccess {
    * the user's Chrome through Claude in Chrome (Claude Code only).
    */
   browserMode: BrowserMode;
+  /** Let the agent use each chat's shared terminal (the terminal_* tools). Off by default: it runs outside the provider's sandbox. */
+  terminal: boolean;
 }
 
 export type BrowserMode = 'nest' | 'chrome';
 
-export const DEFAULT_AGENT_ACCESS: AgentAccess = { claudeConnectors: null, codexConnectors: null, browser: false, browserMode: 'nest' };
+export const DEFAULT_AGENT_ACCESS: AgentAccess = { claudeConnectors: null, codexConnectors: null, browser: false, browserMode: 'nest', terminal: false };
 
 /** The agent's built-in browser, as shown in the live viewport. */
 export interface BrowserStateInfo {
@@ -667,6 +681,22 @@ export interface BrowserStateInfo {
   action: string | null;
   canGoBack: boolean;
   canGoForward: boolean;
+  closed?: boolean;
+}
+
+/** A conversation's shared terminal, which the user and the agent both type into. */
+export interface TerminalStateInfo {
+  conversationId: string;
+  shell: string;
+  /** The folder the shell started in. */
+  cwd: string;
+  /** A command is running (the shell is not at its prompt). */
+  busy: boolean;
+  /** What the agent is running right now, or null. */
+  action: string | null;
+  lastExit: number | null;
+  /** A real pseudo-terminal; false when Nest falls back to plain pipes (no full-screen programs). */
+  pty: boolean;
   closed?: boolean;
 }
 

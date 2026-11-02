@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Brain, ChevronRight, FolderMinus, FolderPlus, Inbox, Pin, PinOff, Plus, Search, Settings, Trash2, UserPlus, X } from 'lucide-react';
+import { Bot, Brain, ChevronRight, FolderMinus, FolderPlus, Inbox, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings, Trash2, UserPlus, X } from 'lucide-react';
 import { RELEASE_CHANNEL, versionLabel } from '@shared/build';
 import type { Agent, Conversation, Project } from '@shared/types';
 import { IS_REMOTE, api } from '../api';
-import { useStore, type Reaction } from '../store';
+import { MAX_PANES, useStore, type PanePlace, type Reaction } from '../store';
 import { listTime } from '../format';
 import { Avatar } from './Avatar';
 import { NewProjectDialog, ProjectMark, dragAgent, dragChat, dragged, moveChat, useProjectDrop, type Dragged } from './Projects';
@@ -24,6 +24,8 @@ export function Sidebar() {
   const agentsById = useMemo(() => new Map(state.agents.map((a) => [a.id, a])), [state.agents]);
   const pinned = state.agents.filter((a) => a.pinned).slice(0, 8);
   const activeId = state.view.name === 'conversation' ? state.view.id : null;
+  // Chats showing in a pane beside the focused one get a lighter highlight.
+  const openIds = useMemo(() => new Set(state.panes.length > 1 ? state.panes : []), [state.panes]);
   const inboxCount = state.inbox.filter((i) => (i.kind === 'approval' ? !i.resolved : !i.readAt)).length;
 
   // A dot marks conversations with an unresolved approval or an unread handoff/failure.
@@ -90,7 +92,7 @@ export function Sidebar() {
     const fromKeyboard = e.clientX === 0 && e.clientY === 0;
     setMenu({ conversation, x: fromKeyboard ? r.left + 24 : e.clientX, y: fromKeyboard ? r.bottom : e.clientY });
   };
-  const rowProps = { agentsById, activeId, needsAttention, running: state.running, reactions: state.reactions, onOpen: openConversation, onMenu };
+  const rowProps = { agentsById, activeId, openIds, needsAttention, running: state.running, reactions: state.reactions, onOpen: openConversation, onMenu };
 
   return (
     <aside className="flex h-full w-[288px] shrink-0 flex-col border-r border-line bg-sidebar max-[900px]:w-[248px] max-[640px]:w-full max-[640px]:border-r-0 max-[640px]:pb-[env(safe-area-inset-bottom)]">
@@ -211,7 +213,7 @@ export function Sidebar() {
         ))}
         {draggingFromProject && <LeaveProjectZone />}
         {loose.map((c) => (
-          <ConversationRow key={c.id} conversation={c} agent={agentsById.get(c.agentId)} active={c.id === activeId} attention={needsAttention.has(c.id)} working={Boolean(state.running[c.id])} reaction={state.reactions[c.id]} onOpen={openConversation} onMenu={onMenu} />
+          <ConversationRow key={c.id} conversation={c} agent={agentsById.get(c.agentId)} active={c.id === activeId} open={openIds.has(c.id)} attention={needsAttention.has(c.id)} working={Boolean(state.running[c.id])} reaction={state.reactions[c.id]} onOpen={openConversation} onMenu={onMenu} />
         ))}
         {state.ready && visible.length === 0 && groups.length === 0 && (
           <div className="px-4 py-10 text-center text-[13px] text-muted">{q ? 'No matches' : 'No chats yet'}</div>
@@ -221,7 +223,6 @@ export function Sidebar() {
         <RowMenu
           target={menu}
           agent={agentsById.get(menu.conversation.agentId)}
-          active={menu.conversation.id === activeId}
           onClose={() => setMenu(null)}
           onNewProject={(conversationId) => setNewProject(conversationId)}
         />
@@ -255,6 +256,7 @@ function ProjectFolder({
   conversations,
   agentsById,
   activeId,
+  openIds,
   needsAttention,
   running,
   reactions,
@@ -269,13 +271,14 @@ function ProjectFolder({
   conversations: Conversation[];
   agentsById: Map<string, Agent>;
   activeId: string | null;
+  openIds: Set<string>;
   needsAttention: Set<string>;
   running: Record<string, true>;
   reactions: Record<string, Reaction>;
   forceOpen: boolean;
   viewing: boolean;
   onView: () => void;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, place?: PanePlace) => void;
   onMenu: (c: Conversation, e: React.MouseEvent) => void;
 }) {
   const containsActive = conversations.some((c) => c.id === activeId);
@@ -324,6 +327,7 @@ function ProjectFolder({
               conversation={c}
               agent={agentsById.get(c.agentId)}
               active={c.id === activeId}
+              open={openIds.has(c.id)}
               attention={needsAttention.has(c.id)}
               working={Boolean(running[c.id])}
               reaction={reactions[c.id]}
@@ -358,6 +362,7 @@ function ConversationRow({
   conversation,
   agent,
   active,
+  open,
   attention,
   working,
   reaction,
@@ -368,22 +373,27 @@ function ConversationRow({
   conversation: Conversation;
   agent?: Agent;
   active: boolean;
+  /** Showing in a pane beside the focused chat. */
+  open?: boolean;
   attention: boolean;
   working: boolean;
   reaction?: Reaction;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, place?: PanePlace) => void;
   onMenu: (c: Conversation, e: React.MouseEvent) => void;
   compact?: boolean;
 }) {
   return (
     <Tooltip label={conversation.title} side="right" align="start">
       <button
-        onClick={() => onOpen(conversation.id)}
+        // Ctrl/Cmd+click or middle-click docks the chat beside the focused one instead of replacing it.
+        onClick={(e) => onOpen(conversation.id, e.ctrlKey || e.metaKey ? 'right' : 'focus')}
+        onAuxClick={(e) => e.button === 1 && onOpen(conversation.id, 'right')}
+        onMouseDown={(e) => e.button === 1 && e.preventDefault()}
         onContextMenu={(e) => onMenu(conversation, e)}
         draggable
         onDragStart={(e) => dragChat(e, conversation.id)}
         aria-current={active ? 'page' : undefined}
-        className={cx('mb-0.5 flex w-full items-center gap-3 rounded-2xl text-left transition-colors', compact ? 'px-2 py-1.5' : 'px-2.5 py-2.5', active ? 'bg-active' : 'hover:bg-hover')}
+        className={cx('mb-0.5 flex w-full items-center gap-3 rounded-2xl text-left transition-colors', compact ? 'px-2 py-1.5' : 'px-2.5 py-2.5', active ? 'bg-active' : open ? 'bg-active/50 hover:bg-hover' : 'hover:bg-hover')}
       >
         {agent && <Avatar spec={agent.avatar} size={compact ? 28 : 44} working={working} reaction={reaction} agentId={agent.id} className="shrink-0" />}
         <span className="min-w-0 flex-1">
@@ -418,17 +428,20 @@ type RowMenuTarget = { conversation: Conversation; x: number; y: number };
 function RowMenu({
   target,
   agent,
-  active,
   onClose,
   onNewProject,
 }: {
   target: RowMenuTarget;
   agent?: Agent;
-  active: boolean;
   onClose: () => void;
   onNewProject: (conversationId: string) => void;
 }) {
-  const { state, navigate, attempt, removeConversation, reloadAgents, toast } = useStore();
+  const { state, openConversation, attempt, removeConversation, reloadAgents, toast } = useStore();
+  const dock = (place: PanePlace) => {
+    onClose();
+    void openConversation(target.conversation.id, place);
+  };
+  const canDock = state.panes.length > 0 && (state.panes.length < MAX_PANES || state.panes.includes(target.conversation.id));
   const move = (projectId: string | null) => {
     onClose();
     void moveChat(target.conversation.id, projectId, { state, attempt, toast });
@@ -462,7 +475,6 @@ function RowMenu({
     });
     if (!ok) return;
     removeConversation(target.conversation.id);
-    if (active) navigate({ name: 'home' });
   };
 
   const togglePin = async () => {
@@ -476,8 +488,8 @@ function RowMenu({
   const width = 220;
   const chatProject = target.conversation.projectId;
   const others = state.projects.filter((p) => p.id !== chatProject);
-  // Rough height so the menu stays on screen: pin + label + one row per project + extras + delete.
-  const height = (agent ? 90 : 56) + (others.length + (chatProject ? 2 : 1)) * 34 + 30;
+  // Rough height so the menu stays on screen: dock + pin + label + one row per project + extras + delete.
+  const height = (canDock ? 78 : 0) + (agent ? 90 : 56) + (others.length + (chatProject ? 2 : 1)) * 34 + 30;
   return (
     <div
       ref={ref}
@@ -486,6 +498,19 @@ function RowMenu({
       className="fixed z-50 rounded-2xl border border-line bg-panel p-1.5 shadow-pop"
       style={{ width, left: Math.min(target.x, window.innerWidth - width - 8), top: Math.max(8, Math.min(target.y, window.innerHeight - height)) }}
     >
+      {canDock && (
+        <>
+          <MenuItem onClick={() => dock('left')}>
+            <PanelLeft size={14} className="text-muted" />
+            Open on the left
+          </MenuItem>
+          <MenuItem onClick={() => dock('right')}>
+            <PanelRight size={14} className="text-muted" />
+            Open on the right
+          </MenuItem>
+          <div className="my-1 border-t border-line" />
+        </>
+      )}
       {agent && (
         <>
           <MenuItem onClick={() => void togglePin()}>

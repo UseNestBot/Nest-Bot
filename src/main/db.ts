@@ -220,6 +220,12 @@ const MIGRATIONS: string[] = [
   ALTER TABLE conversations ADD COLUMN project_id TEXT;
   UPDATE conversations SET project_id = (SELECT a.project_id FROM agents a WHERE a.id = conversations.agent_id);
   `,
+  // Schedules choose the project their runs work in (their chats appear there and use its folder).
+  // Existing schedules take their agent's project, which is where their runs belonged all along.
+  `
+  ALTER TABLE schedules ADD COLUMN project_id TEXT;
+  UPDATE schedules SET project_id = (SELECT a.project_id FROM agents a WHERE a.id = schedules.agent_id);
+  `,
 ];
 
 const json = <T>(v: SQLInputValue, fallback: T): T => {
@@ -260,6 +266,9 @@ export class NestDb {
 
   private migrate(): void {
     const version = n((this.db.prepare('PRAGMA user_version').get() as Row).user_version);
+    // A build from another branch can claim a version without everything up to it. Restore that first,
+    // so the migrations still to run find the tables they alter.
+    if (version > 0 && version < MIGRATIONS.length) this.repairSchema(version);
     for (let v = version; v < MIGRATIONS.length; v++) {
       this.db.exec('BEGIN');
       try {
@@ -279,12 +288,13 @@ export class NestDb {
    * version whose tables or columns it never got (e.g. "table conversations has no column named project_id").
    * Re-create anything the migrations define that is missing, and backfill the columns that need it.
    */
-  private repairSchema(): void {
+  /** `upTo`: only what the first `upTo` migrations define (default all). */
+  private repairSchema(upTo = MIGRATIONS.length): void {
     const tables = new Set(this.all(`SELECT name FROM sqlite_master WHERE type = 'table'`).map((r) => String(r.name)));
     const columns = (table: string) => new Set(this.all(`PRAGMA table_info(${table})`).map((r) => String(r.name)));
     const added = new Set<string>();
     this.tx(() => {
-      for (const m of MIGRATIONS) {
+      for (const m of MIGRATIONS.slice(0, upTo)) {
         for (const [ddl, table] of m.matchAll(/CREATE TABLE (\w+) \([\s\S]*?\n\s*\);/g)) {
           if (tables.has(table)) continue;
           this.db.exec(ddl);
@@ -295,6 +305,9 @@ export class NestDb {
           this.db.exec(ddl);
           added.add(`${table}.${column}`);
         }
+      }
+      if (added.has('schedules.project_id')) {
+        this.db.exec(`UPDATE schedules SET project_id = (SELECT a.project_id FROM agents a WHERE a.id = schedules.agent_id) WHERE project_id IS NULL`);
       }
       if (added.has('conversations.project_id')) {
         this.db.exec(
@@ -875,6 +888,7 @@ export class NestDb {
       cadence: json(r.cadence, { kind: 'daily', time: '09:00' }),
       target: String(r.target) === 'same' ? 'same' : 'new',
       conversationId: s(r.conversation_id),
+      projectId: s(r.project_id),
       enabled: n(r.enabled) === 1,
       nextRunAt: r.next_run_at === null ? null : n(r.next_run_at),
       lastRunAt: r.last_run_at === null ? null : n(r.last_run_at),
@@ -898,8 +912,8 @@ export class NestDb {
     const id = randomUUID();
     const now = Date.now();
     this.run(
-      `INSERT INTO schedules (id, agent_id, title, prompt, cadence, target, enabled, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id, d.agentId, d.title, d.prompt, JSON.stringify(d.cadence), d.target, d.enabled ? 1 : 0, nextRunAt, now, now,
+      `INSERT INTO schedules (id, agent_id, title, prompt, cadence, target, project_id, enabled, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, d.agentId, d.title, d.prompt, JSON.stringify(d.cadence), d.target, this.validProject(d.projectId ?? null), d.enabled ? 1 : 0, nextRunAt, now, now,
     );
     return this.getSchedule(id)!;
   }
@@ -909,8 +923,8 @@ export class NestDb {
     if (!cur) throw new Error('Schedule not found');
     const x = { ...cur, ...patch };
     this.run(
-      `UPDATE schedules SET agent_id = ?, title = ?, prompt = ?, cadence = ?, target = ?, conversation_id = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_status = ?, last_conversation_id = ?, updated_at = ? WHERE id = ?`,
-      x.agentId, x.title, x.prompt, JSON.stringify(x.cadence), x.target, x.conversationId, x.enabled ? 1 : 0, x.nextRunAt, x.lastRunAt, x.lastStatus, x.lastConversationId, Date.now(), id,
+      `UPDATE schedules SET agent_id = ?, title = ?, prompt = ?, cadence = ?, target = ?, conversation_id = ?, project_id = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_status = ?, last_conversation_id = ?, updated_at = ? WHERE id = ?`,
+      x.agentId, x.title, x.prompt, JSON.stringify(x.cadence), x.target, x.conversationId, this.validProject(x.projectId), x.enabled ? 1 : 0, x.nextRunAt, x.lastRunAt, x.lastStatus, x.lastConversationId, Date.now(), id,
     );
     return this.getSchedule(id)!;
   }

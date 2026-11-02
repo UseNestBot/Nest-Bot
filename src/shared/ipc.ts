@@ -4,6 +4,7 @@ import type {
   Agent,
   BrowserInput,
   BrowserStateInfo,
+  TerminalStateInfo,
   AgentAccess,
   ConnectorInventory,
   AppInfo,
@@ -134,6 +135,15 @@ export interface NestApi {
   browserWatch(agentId: string, watching: boolean): Promise<{ state: BrowserStateInfo; frame: string | null } | null>;
   browserInput(agentId: string, input: BrowserInput): Promise<void>;
   browserNavigate(agentId: string, action: 'back' | 'forward' | 'reload' | 'close' | 'open', url?: string): Promise<void>;
+
+  // A conversation's shared terminal (the agent uses it through Nest's terminal tools)
+  /** The terminal and its recent output, or null when it isn't open. */
+  terminalAttach(conversationId: string): Promise<{ state: TerminalStateInfo; buffer: string } | null>;
+  /** Open the terminal in the conversation's working folder (or return the open one). */
+  terminalOpen(conversationId: string, cols: number, rows: number): Promise<{ state: TerminalStateInfo; buffer: string }>;
+  terminalInput(conversationId: string, data: string): Promise<void>;
+  terminalResize(conversationId: string, cols: number, rows: number): Promise<void>;
+  terminalClose(conversationId: string): Promise<void>;
   /** Open a folder in Explorer. Only existing directories are accepted. */
   openFolder(path: string): Promise<void>;
   getAppInfo(): Promise<AppInfo>;
@@ -221,6 +231,11 @@ export const API_METHODS = [
   'browserWatch',
   'browserInput',
   'browserNavigate',
+  'terminalAttach',
+  'terminalOpen',
+  'terminalInput',
+  'terminalResize',
+  'terminalClose',
   'openFolder',
   'getAppInfo',
   'getSettings',

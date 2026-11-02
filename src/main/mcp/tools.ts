@@ -1,6 +1,7 @@
 import { describeCadence, sanitizeCadence } from '@shared/schedule';
 import { AVATAR_PALETTE } from '@shared/templates';
-import { DEFAULT_PERMISSIONS, PROVIDER_LABEL, PROVIDERS, isProviderId, type ProviderId } from '@shared/types';
+import path from 'node:path';
+import { DEFAULT_PERMISSIONS, PROVIDER_LABEL, PROVIDERS, isProviderId, type Project, type ProviderId } from '@shared/types';
 import type { NestDb } from '../db';
 import type { RunManager } from '../runs';
 import type { Scheduler } from '../scheduler';
@@ -29,6 +30,12 @@ export interface BrowserTools {
   screenshot(agentId: string): Promise<{ data: string; mimeType: string } | null>;
 }
 
+/** The conversation's shared terminal, as the tools see it (implemented by TerminalHost). */
+export interface TerminalTools {
+  run(conversationId: string, command: string, timeoutMs: number, who: string): Promise<{ text: string; ok: boolean }>;
+  read(conversationId: string, lines: number): string;
+  sendKeys(conversationId: string, keys: string): string;
+}
 
 const MAX_DELEGATION_DEPTH = 3;
 const DELEGATE_WAIT_MS = 25 * 60_000;
@@ -92,6 +99,7 @@ export const TOOL_DEFS: ToolDef[] = [
         title: { type: 'string' },
         prompt: { type: 'string', description: 'What the agent should do each time.' },
         agent: { type: 'string', description: 'Agent name; defaults to you.' },
+        project: { type: 'string', description: 'Project each run works in: its chats appear there and use the project’s shared folder. Defaults to the agent’s project; "none" for no project.' },
         cadence: {
           type: 'string',
           enum: ['daily', 'weekdays', 'weekly', 'interval'],
@@ -101,6 +109,40 @@ export const TOOL_DEFS: ToolDef[] = [
         every_minutes: { type: 'integer', description: 'Minutes between runs (interval, minimum 15).' },
       },
       ['title', 'prompt', 'cadence'],
+    ),
+  },
+  {
+    name: 'update_schedule',
+    description:
+      'Change an existing schedule (routine): the project its runs work in (their chats appear there and use the project’s shared folder), what it does, when it runs, or pause and resume it. The user approves it in Nest.',
+    inputSchema: obj(
+      {
+        schedule: { type: 'string', description: 'The schedule’s name, as list_schedules shows it.' },
+        project: { type: 'string', description: 'Project name, or "none".' },
+        prompt: { type: 'string', description: 'Replacement instructions for each run (omit to keep).' },
+        cadence: {
+          type: 'string',
+          enum: ['daily', 'weekdays', 'weekly', 'interval'],
+          description: 'New timing (omit to keep the current one).',
+        },
+        time: { type: 'string', description: 'HH:MM, 24-hour local time (daily, weekdays, weekly).' },
+        weekday: { type: 'integer', description: '0 = Sunday … 6 = Saturday (weekly).' },
+        every_minutes: { type: 'integer', description: 'Minutes between runs (interval, minimum 15).' },
+        enabled: { type: 'boolean', description: 'false pauses it, true resumes it.' },
+      },
+      ['schedule'],
+    ),
+  },
+  {
+    name: 'update_project',
+    description:
+      'Set a project’s shared folder. Members without a folder of their own, and scheduled runs in the project, work there. The user approves it in Nest.',
+    inputSchema: obj(
+      {
+        project: { type: 'string', description: 'Project name; default this chat’s project.' },
+        folder: { type: 'string', description: 'Full path of the folder (created when first used), or "default" for Nest’s default working folder.' },
+      },
+      ['folder'],
     ),
   },
   {
@@ -192,27 +234,128 @@ export const BROWSER_TOOL_DEFS: ToolDef[] = [
   },
 ];
 
+/** Names agents use for special keys in terminal_send_keys (see TERMINAL_KEYS). */
+const TERMINAL_KEY_NAMES = ['ctrl+c', 'ctrl+d', 'ctrl+z', 'ctrl+l', 'enter', 'tab', 'escape', 'backspace', 'up', 'down', 'right', 'left'];
+
+export const TERMINAL_TOOL_DEFS: ToolDef[] = [
+  {
+    name: 'terminal_run',
+    description:
+      'Run a shell command in the terminal you share with the user (shown live in Nest; the user can type into it too). It starts in this chat’s working folder and keeps its state (cd, env vars, running servers) between calls. Waits for the command to finish and returns its output and exit code. Use it when the user should see the work, or for long-running processes they may want to watch or take over.',
+    inputSchema: obj(
+      {
+        command: { type: 'string', description: 'The command (bash on macOS/Linux, PowerShell on Windows). Several lines run as one script.' },
+        timeout_seconds: { type: 'integer', description: 'How long to wait before returning (default 60, max 600). The command keeps running in the terminal after a timeout.' },
+      },
+      ['command'],
+    ),
+  },
+  {
+    name: 'terminal_read',
+    description: 'Read the shared terminal’s recent output (including anything the user typed or ran) and whether a command is still running.',
+    inputSchema: obj({ lines: { type: 'integer', description: 'How many recent lines (default 100).' } }),
+  },
+  {
+    name: 'terminal_send_keys',
+    description:
+      'Type into the shared terminal, for interactive programs and to stop commands. Send text in "keys" and/or a special key in "key" (pressed after the text). To stop a running command use key "ctrl+c"; to answer a prompt send keys "y" with key "enter".',
+    inputSchema: obj({
+      keys: { type: 'string', description: 'Text to type, exactly as written (backslashes stay literal). Nothing is submitted until key "enter".' },
+      key: { type: 'string', enum: TERMINAL_KEY_NAMES, description: 'A special key to press after the text.' },
+    }),
+  },
+];
+
+/**
+ * Special keys by name. Agents can't reliably send control characters through
+ * a tool call (they arrive empty), so Ctrl-C and friends are named instead.
+ */
+export const TERMINAL_KEYS: Record<string, string> = {
+  'ctrl+c': '\u0003',
+  'ctrl+d': '\u0004',
+  'ctrl+z': '\u001a',
+  'ctrl+l': '\u000c',
+  enter: '\r',
+  tab: '\t',
+  escape: '\u001b',
+  backspace: '\u007f',
+  up: '\u001b[A',
+  down: '\u001b[B',
+  right: '\u001b[C',
+  left: '\u001b[D',
+};
+
+/** Where a schedule's runs work, for approval cards and replies. */
+function worksIn(project: Project | null | undefined): string {
+  return project ? `in ${project.name} (${project.workspace ?? 'Nest’s default working folder'})` : 'outside any project';
+}
+
 /** Implements the Nest tools for one calling conversation. */
 export class NestTools {
   constructor(
     private readonly db: NestDb,
     private readonly runs: RunManager,
     private readonly scheduler: Scheduler,
-    private readonly onAgentsChanged: () => void,
+    /** Something an agent tool changed: agents (default) or projects. */
+    private readonly onAgentsChanged: (what?: 'agents' | 'projects') => void,
     /** The built-in browser and who may use it; absent in tests and when unavailable. */
     private readonly browser?: { host: BrowserTools; enabledFor: (agentId: string) => boolean },
+    /** The shared terminal and which agents may use it (opt-in per agent); absent in tests. */
+    private readonly terminal?: { host: TerminalTools; enabledFor: (agentId: string) => boolean },
   ) {}
 
   /** Tools this conversation's agent may see: browser tools only when its Browser is set to the Nest browser. */
   listFor(conversationId: string): ToolDef[] {
     const agentId = this.db.getConversation(conversationId)?.agentId;
     const browser = Boolean(agentId && this.browser?.enabledFor(agentId));
-    return browser ? [...TOOL_DEFS, ...BROWSER_TOOL_DEFS] : TOOL_DEFS;
+    const terminal = Boolean(agentId && this.terminal?.enabledFor(agentId));
+    return [...TOOL_DEFS, ...(browser ? BROWSER_TOOL_DEFS : []), ...(terminal ? TERMINAL_TOOL_DEFS : [])];
+  }
+
+  private async terminalCall(conversationId: string, agentId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const term = this.terminal?.host;
+    if (!term || !this.terminal?.enabledFor(agentId))
+      return { ok: false, text: `The terminal is turned off for this agent. The user can turn it on in Nest → Settings → ${'Connectors & tools'}, or from the chat's terminal panel.` };
+    // The terminal runs outside the provider's own sandbox, so commands and keystrokes ask first: always, unless the
+    // user turned off Settings → Permissions → "Always ask before terminal commands" and this agent skips permissions.
+    const force = this.db.getSettings().terminalAlwaysAsk;
+    const confirm = async (title: string, action: string) =>
+      (await this.runs.requestLocalApproval(conversationId, { title, action, target: null, reason: null, detail: null, approveLabel: 'Run' }, force)) === 'allow';
+    try {
+      switch (name) {
+        case 'terminal_run': {
+          const command = typeof args.command === 'string' ? args.command.slice(0, 20000) : '';
+          if (!command.trim()) return { ok: false, text: 'command is required.' };
+          const secs = Number.isFinite(Number(args.timeout_seconds)) ? Math.min(Math.max(Number(args.timeout_seconds), 1), 600) : 60;
+          if (!(await confirm(`${agentName} wants to run a command in the terminal`, command))) return { ok: false, text: 'The user declined this command.' };
+          return await term.run(conversationId, command, secs * 1000, agentName);
+        }
+        case 'terminal_read': {
+          const lines = Number.isFinite(Number(args.lines)) ? Math.round(Number(args.lines)) : 100;
+          return { ok: true, text: term.read(conversationId, lines) };
+        }
+        case 'terminal_send_keys': {
+          const text = typeof args.keys === 'string' ? args.keys.slice(0, 5000) : '';
+          const keyName = typeof args.key === 'string' ? args.key.trim().toLowerCase() : '';
+          if (keyName && !(keyName in TERMINAL_KEYS)) return { ok: false, text: `Unknown key "${args.key}". Use one of: ${TERMINAL_KEY_NAMES.join(', ')}.` };
+          const keys = text + (keyName ? TERMINAL_KEYS[keyName] : '');
+          if (!keys) return { ok: false, text: 'Send text in "keys", a special key in "key" (for example "ctrl+c" to stop a command), or both.' };
+          // Ctrl-C alone only stops things, so it never needs asking.
+          const shown = [text && JSON.stringify(text), keyName && `[${keyName}]`].filter(Boolean).join(' ');
+          if (keys !== '\u0003' && !(await confirm(`${agentName} wants to type into the terminal`, shown))) return { ok: false, text: 'The user declined these keystrokes.' };
+          return { ok: true, text: term.sendKeys(conversationId, keys) };
+        }
+        default:
+          return { ok: false, text: `Unknown terminal tool: ${name}` };
+      }
+    } catch (err) {
+      return { ok: false, text: `Terminal error: ${(err as Error).message}` };
+    }
   }
 
   private async browserCall(conversationId: string, agentId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
     const host = this.browser?.host;
-    if (!host || !this.browser?.enabledFor(agentId)) return { ok: false, text: 'The browser is turned off for this agent. The user can turn it on in Nest → Settings → Connectors & browser.' };
+    if (!host || !this.browser?.enabledFor(agentId)) return { ok: false, text: 'The browser is turned off for this agent. The user can turn it on in Nest → Settings → Connectors & tools.' };
     const ref = Math.round(Number(args.ref));
     const confirm = async (what: string, detail: string | null) =>
       (await this.runs.requestLocalApproval(conversationId, { title: `${agentName} wants to ${what} in its browser`, action: detail ?? what, target: null, reason: null, detail: null, approveLabel: 'Allow' })) === 'allow';
@@ -256,6 +399,7 @@ export class NestTools {
     const me = conversation ? this.db.getAgent(conversation.agentId, true) : null;
     if (!conversation || !me) return { ok: false, text: 'This conversation no longer exists in Nest.' };
     if (name.startsWith('browser_')) return this.browserCall(conversationId, me.id, me.name, name, args);
+    if (name.startsWith('terminal_')) return this.terminalCall(conversationId, me.id, me.name, name, args);
     const str = (k: string, max = 20000) => (typeof args[k] === 'string' ? (args[k] as string).trim().slice(0, max) : '');
 
     switch (name) {
@@ -382,10 +526,14 @@ export class NestTools {
         const list = this.db.listSchedules();
         if (!list.length) return { ok: true, text: 'No schedules yet.' };
         const names = new Map(this.db.listAgents().map((a) => [a.id, a.name]));
+        const projects = new Map(this.db.listProjects().map((p) => [p.id, p.name]));
         return {
           ok: true,
           text: list
-            .map((s) => `- ${s.title} (${names.get(s.agentId) ?? 'removed agent'}): ${describeCadence(s.cadence)}${s.enabled ? '' : ' [paused]'}${s.nextRunAt ? `, next ${new Date(s.nextRunAt).toLocaleString()}` : ''}`)
+            .map(
+              (s) =>
+                `- ${s.title} (${names.get(s.agentId) ?? 'removed agent'}): ${describeCadence(s.cadence)}${s.enabled ? '' : ' [paused]'}, works in ${(s.projectId && projects.get(s.projectId)) || 'no project'}${s.nextRunAt ? `, next ${new Date(s.nextRunAt).toLocaleString()}` : ''}`,
+            )
             .join('\n'),
         };
       }
@@ -396,17 +544,79 @@ export class NestTools {
         const title = str('title', 80);
         const prompt = str('prompt');
         if (!title || !prompt) return { ok: false, text: 'title and prompt are required.' };
+        const projectArg = str('project', 80);
+        const project = projectArg ? this.findProject(projectArg) : agent.projectId ? this.db.getProject(agent.projectId) : null;
+        if (project === undefined) return { ok: false, text: `No project named "${projectArg}". Use get_project or list_agents to see the projects, or "none".` };
         const choice = await this.runs.requestLocalApproval(conversationId, {
           title: `${me.name} wants to create a schedule`,
           action: `${title}: ${describeCadence(cadence)}`,
-          target: agent.name,
+          target: `${agent.name} · ${worksIn(project)}`,
           reason: null,
           detail: prompt,
           approveLabel: 'Create schedule',
         }, ADMIN_ALWAYS_ASKS);
         if (choice !== 'allow') return { ok: false, text: 'The user declined this schedule.' };
-        const s = this.scheduler.create({ agentId: agent.id, title, prompt, cadence, target: 'new', enabled: true });
-        return { ok: true, text: `Created "${s.title}" (${describeCadence(s.cadence)}). Next run ${s.nextRunAt ? new Date(s.nextRunAt).toLocaleString() : 'not scheduled'}.` };
+        const s = this.scheduler.create({ agentId: agent.id, title, prompt, cadence, target: 'new', enabled: true, projectId: project?.id ?? null });
+        return { ok: true, text: `Created "${s.title}" (${describeCadence(s.cadence)}), ${worksIn(project)}. Next run ${s.nextRunAt ? new Date(s.nextRunAt).toLocaleString() : 'not scheduled'}.` };
+      }
+      case 'update_schedule': {
+        const name = str('schedule', 80).toLowerCase();
+        const matches = this.db.listSchedules().filter((s) => s.title.toLowerCase() === name);
+        if (!matches.length) return { ok: false, text: `No schedule named "${str('schedule', 80)}". Use list_schedules to see them.` };
+        if (matches.length > 1) return { ok: false, text: `Several schedules are named "${str('schedule', 80)}". Ask the user to rename one in Nest.` };
+        const cur = matches[0];
+        const owner = this.db.getAgent(cur.agentId);
+        if (!owner) return { ok: false, text: 'That schedule’s agent was removed.' };
+        const changes: string[] = [];
+        let projectId = cur.projectId;
+        const projectArg = str('project', 80);
+        if (projectArg) {
+          const project = this.findProject(projectArg);
+          if (project === undefined) return { ok: false, text: `No project named "${projectArg}". Use "none" for no project.` };
+          if ((project?.id ?? null) !== cur.projectId) changes.push(`works in ${worksIn(project)}`);
+          projectId = project?.id ?? null;
+        }
+        const cadence = str('cadence', 20) ? sanitizeCadence({ kind: str('cadence', 20), time: str('time', 5), weekday: args.weekday, minutes: args.every_minutes }) : cur.cadence;
+        if (describeCadence(cadence) !== describeCadence(cur.cadence)) changes.push(`runs ${describeCadence(cadence)}`);
+        const prompt = str('prompt') || cur.prompt;
+        if (prompt !== cur.prompt) changes.push('new instructions');
+        const enabled = typeof args.enabled === 'boolean' ? args.enabled : cur.enabled;
+        if (enabled !== cur.enabled) changes.push(enabled ? 'resume' : 'pause');
+        if (!changes.length) return { ok: true, text: `"${cur.title}" already looks like that; nothing changed.` };
+        const choice = await this.runs.requestLocalApproval(conversationId, {
+          title: `${me.name} wants to change a schedule`,
+          action: `${cur.title}: ${changes.join('; ')}`,
+          target: owner.name,
+          reason: null,
+          detail: prompt !== cur.prompt ? prompt : null,
+          approveLabel: 'Change schedule',
+        }, ADMIN_ALWAYS_ASKS);
+        if (choice !== 'allow') return { ok: false, text: 'The user declined this change.' };
+        const s = this.scheduler.update(cur.id, { agentId: cur.agentId, title: cur.title, prompt, cadence, target: cur.target, enabled, projectId });
+        const project = s.projectId ? this.db.getProject(s.projectId) : null;
+        return { ok: true, text: `Updated "${s.title}": ${describeCadence(s.cadence)}${s.enabled ? '' : ' (paused)'}, ${worksIn(project)}. Its next run opens there.` };
+      }
+      case 'update_project': {
+        const projectArg = str('project', 80);
+        const project = projectArg ? this.findProject(projectArg) : conversation.projectId ? this.db.getProject(conversation.projectId) : null;
+        if (!project) return { ok: false, text: projectArg ? `No project named "${projectArg}".` : 'This chat isn’t in a project. Name the project to change.' };
+        const folderArg = str('folder', 1000);
+        if (!folderArg) return { ok: false, text: 'folder is required: a full path, or "default".' };
+        const folder = folderArg.toLowerCase() === 'default' ? null : path.resolve(folderArg);
+        if (folder && !path.isAbsolute(folderArg)) return { ok: false, text: 'folder must be a full path, such as C:\\Users\\you\\Documents\\Nest\\gtm.' };
+        if ((folder ?? null) === (project.workspace ?? null)) return { ok: true, text: `${project.name} already uses ${folder ?? 'Nest’s default working folder'}.` };
+        const choice = await this.runs.requestLocalApproval(conversationId, {
+          title: `${me.name} wants to change a project’s folder`,
+          action: `${project.name}: ${folder ?? 'Nest’s default working folder'}`,
+          target: `Was: ${project.workspace ?? 'Nest’s default working folder'}`,
+          reason: null,
+          detail: 'Members without a folder of their own, and scheduled runs in this project, will work here from their next message.',
+          approveLabel: 'Change folder',
+        }, ADMIN_ALWAYS_ASKS);
+        if (choice !== 'allow') return { ok: false, text: 'The user declined this change.' };
+        this.db.updateProject(project.id, { name: project.name, brief: project.brief, workspace: folder, color: project.color });
+        this.onAgentsChanged('projects');
+        return { ok: true, text: `${project.name} now works in ${folder ?? 'Nest’s default working folder'}.` };
       }
       case 'create_agent': {
         const agentName = str('name', 60);
@@ -526,6 +736,13 @@ export class NestTools {
       default:
         return { ok: false, text: `Unknown Nest tool: ${name}` };
     }
+  }
+
+  /** A project by name; null for "none"; undefined when there's no such project. */
+  private findProject(name: string): Project | null | undefined {
+    const n = name.trim().toLowerCase();
+    if (n === 'none') return null;
+    return this.db.listProjects().find((p) => p.name.toLowerCase() === n);
   }
 
   private findAgent(name: string) {

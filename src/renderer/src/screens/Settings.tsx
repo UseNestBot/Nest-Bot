@@ -53,7 +53,7 @@ const SECTIONS: Array<{ id: SettingsSection; label: string; icon: typeof Setting
   { id: 'general', label: 'General', icon: Settings2 },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'agents', label: 'Agent tools', icon: Bot },
-  { id: 'connectors', label: 'Connectors & browser', icon: Blocks },
+  { id: 'connectors', label: 'Connectors & tools', icon: Blocks },
   { id: 'conversations', label: 'Conversations', icon: MessageSquare },
   { id: 'voice', label: 'Voice', icon: Mic },
   { id: 'providers', label: 'Providers', icon: Plug },
@@ -478,7 +478,7 @@ function AgentTools() {
 }
 
 // ---------------------------------------------------------------------------
-// Connectors & browser
+// Connectors & tools
 
 const PROVIDERS_ORDER: ProviderId[] = ['claude', 'codex'];
 const CONNECTOR_HELP: Partial<Record<ProviderId, string>> = {
@@ -529,8 +529,8 @@ function Connectors() {
   const order = agent ? [agent.provider, ...PROVIDERS_ORDER.filter((p) => p !== agent.provider)] : PROVIDERS_ORDER;
   return (
     <>
-      <Title subtitle="Agents can use the connectors you’ve already set up in Claude Code and Codex, such as Gmail, Google Calendar and Slack. Each provider keeps its own sign-in; Nest stores no connector credentials.">
-        Connectors & browser
+      <Title subtitle="Choose what each agent may use: the connectors you’ve already set up in Claude Code and Codex (such as Gmail, Google Calendar and Slack), a browser, and the shared terminal. Each provider keeps its own sign-in; Nest stores no connector credentials.">
+        Connectors & tools
       </Title>
       {agents.length === 0 ? (
         <Group>
@@ -595,6 +595,18 @@ function Connectors() {
                       <div className="mt-1 text-muted">Then press Recheck under “Connected in Claude Code”.</div>
                     </div>
                   )}
+                  <Row
+                    label="Terminal"
+                    description={
+                      access.terminal
+                        ? `${agent.name} can run commands in each chat’s shared terminal, shown live under the chat. ${
+                            state.settings.terminalAlwaysAsk ? 'Every command waits for your approval.' : 'Commands run without asking when this agent skips permissions.'
+                          }`
+                        : 'Off: this agent can’t use the terminal. You can still open it yourself from a chat.'
+                    }
+                  >
+                    <Toggle checked={access.terminal} label="Terminal" onChange={(terminal) => void save({ ...access, terminal })} />
+                  </Row>
                   {access.browser && access.browserMode === 'chrome' && inventories.codex && !inventories.codex.browser.available && (
                     <div className="px-4 py-3 text-[12.5px] leading-relaxed text-muted">
                       <span className="font-medium text-ink-2">Codex: not available. </span>
@@ -1159,6 +1171,30 @@ function Permissions() {
           />
         </Row>
       </Group>
+      <Group title="Terminal" footer={`Agents only get the terminal when you turn it on for them in ${'Connectors & tools'}. Ctrl-C to stop a command never asks.`}>
+        <Row
+          label="Always ask before terminal commands"
+          description="Commands and keystrokes an agent sends to the shared terminal wait for your approval, even for agents that skip permissions. The terminal runs outside the provider’s sandbox."
+        >
+          <Toggle
+            checked={s.terminalAlwaysAsk}
+            label="Always ask before terminal commands"
+            onChange={async (terminalAlwaysAsk) => {
+              if (
+                !terminalAlwaysAsk &&
+                !(await confirmDialog({
+                  title: 'Let agents run terminal commands unasked?',
+                  message: 'Agents that skip permissions and have the terminal turned on will run commands in it without asking you first.',
+                  confirmLabel: 'Turn off',
+                  tone: 'danger',
+                }))
+              )
+                return;
+              void updateSettings({ terminalAlwaysAsk });
+            }}
+          />
+        </Row>
+      </Group>
       <Group title="Billing safety" footer="API key variables such as ANTHROPIC_API_KEY and OPENAI_API_KEY are always removed from provider processes.">
         <Row label="Allow API-billed credentials" description="Off: Nest won’t send messages when a provider is signed in with an API key or a cloud provider instead of your subscription.">
           <Toggle checked={s.allowApiKeyBilling} onChange={(allowApiKeyBilling) => void updateSettings({ allowApiKeyBilling })} label="Allow API billing" />
@@ -1294,6 +1330,12 @@ function Shortcuts() {
     ['New conversation with this agent', 'Ctrl+N'],
     ['New agent', 'Ctrl+Shift+N'],
     ['Open settings', 'Ctrl+,'],
+    ['Open a chat beside the current one', 'Ctrl+Click or middle-click'],
+    ['Open the latest other chat on the right', 'Ctrl+\\'],
+    ['Focus the chat on the left or right', 'Ctrl+[  /  Ctrl+]'],
+    ['Focus chat 1 to 4', 'Ctrl+1 … Ctrl+4'],
+    ['Dock the current chat further left or right', 'Ctrl+Shift+[  /  Ctrl+Shift+]'],
+    ['Close the current chat pane', 'Ctrl+Shift+W'],
     ['Close a dialog or menu', 'Esc'],
     ['Dictate: hold to talk, or tap to start and stop', 'Ctrl+Shift+Space'],
     ['Insert dictation while recording', 'Enter'],

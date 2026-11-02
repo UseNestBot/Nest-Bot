@@ -6,10 +6,12 @@ import { mkdirSync } from 'node:fs';
 import { API_PROVIDERS, PROVIDERS, type ApiProviderId, type AppSettings, type NestEvent, type ProviderId, type ProviderStatus } from '@shared/types';
 import { ConnectorService } from './connectors';
 import { AgentBrowserHost } from './agentBrowser';
+import { TerminalHost } from './terminal';
 import { NestDb } from './db';
 import { PROVIDER_SETTINGS } from './settings';
 import { createHandlers, invokeHandler, registerIpc } from './ipc';
 import { RemoteHost } from './remote/host';
+import { keepTerminalAccess } from './remote/server';
 import { ClaudeProvider } from './providers/claude';
 import { CodexProvider } from './providers/codex';
 import { AcpProvider } from './providers/acp';
@@ -103,6 +105,7 @@ function broadcast(event: NestEvent): void {
 }
 
 let agentBrowser: AgentBrowserHost | null = null;
+let terminals: TerminalHost | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -152,6 +155,7 @@ function createWindow(): void {
     mainWindow = null;
     // Hidden agent browser windows would otherwise keep the app alive.
     agentBrowser?.closeAll();
+    terminals?.closeAll();
   });
 }
 
@@ -214,12 +218,21 @@ app.whenReady().then(() => {
   scheduler = new Scheduler(db, runs, broadcast);
   agentBrowser = new AgentBrowserHost(broadcast);
   const browserHost = agentBrowser;
-  const tools = new NestTools(db, runs, scheduler, () => broadcast({ type: 'agents-changed' }), {
+  const terminalHost = new TerminalHost(broadcast, (conversationId) => {
+    const conversation = db.getConversation(conversationId);
+    if (!conversation) throw new Error('That conversation no longer exists.');
+    return runs.workspaceFor(conversation);
+  });
+  terminals = terminalHost;
+  const tools = new NestTools(db, runs, scheduler, (what = 'agents') => broadcast({ type: what === 'projects' ? 'projects-changed' : 'agents-changed' }), {
     host: browserHost,
     enabledFor: (agentId) => {
       const access = db.getAgentAccess(agentId);
       return access.browser && access.browserMode === 'nest';
     },
+  }, {
+    host: terminalHost,
+    enabledFor: (agentId) => db.getAgentAccess(agentId).terminal,
   });
   // Codex and Claude Code run this script as their own process, which can't read inside app.asar,
   // so the installed app ships it unpacked (package.json "asarUnpack").
@@ -254,7 +267,7 @@ app.whenReady().then(() => {
     file: path.join(app.getPath('userData'), 'remote.json'),
     staticDir: path.join(__dirname, '../renderer'),
     uploadsDir: path.join(app.getPath('userData'), 'uploads'),
-    call: (method, args) => invokeHandler(handlers, method, args),
+    call: (method, args) => invokeHandler(handlers, method, method === 'setAgentAccess' ? keepTerminalAccess(args, (id) => db.getAgentAccess(id)) : args),
     onChange: () => broadcast({ type: 'remote-changed' }),
   });
   remote = remoteHost;
@@ -269,6 +282,7 @@ app.whenReady().then(() => {
     connectors,
     models,
     browser: browserHost,
+    terminal: terminalHost,
     getWindow: () => mainWindow,
     defaultWorkspace: () => effectiveDefaultWorkspace(db),
     broadcast,
@@ -312,6 +326,7 @@ app.on('before-quit', (event) => {
   const shutdown = async () => {
     scheduler?.stop();
     updater?.stop();
+    terminals?.closeAll();
     await remote?.stop();
     await Promise.race([runs?.cancelAll(), new Promise((r) => setTimeout(r, 6000))]);
     bridge?.stop();

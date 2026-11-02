@@ -17,7 +17,8 @@ function friendlyCadence(c: ScheduleCadence): string {
 }
 
 /** Right-hand panel for the open conversation's agent: folder, routines, instructions, memory, other chats. */
-export function DetailsPanel({ agent, conversation, onClose }: { agent: Agent; conversation: Conversation; onClose: () => void }) {
+/** floating: drawn over the chat instead of beside it (split panes; narrow windows do this through CSS). titlebar: reserve room for the window controls. */
+export function DetailsPanel({ agent, conversation, floating, titlebar = true, onClose }: { agent: Agent; conversation: Conversation; floating?: boolean; titlebar?: boolean; onClose: () => void }) {
   const { state, navigate, openConversation, startConversation, attempt } = useStore();
   const [defaultFolder, setDefaultFolder] = useState<string | null>(null);
   const [notes, setNotes] = useState<MemoryNote[]>([]);
@@ -45,7 +46,10 @@ export function DetailsPanel({ agent, conversation, onClose }: { agent: Agent; c
 
   return (
     <aside
-      className="panel-in flex h-full w-[340px] shrink-0 flex-col border-l border-line bg-canvas max-[1120px]:absolute max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-30 max-[1120px]:shadow-pop max-[640px]:w-full"
+      className={cx(
+        'panel-in flex h-full w-[340px] max-w-full shrink-0 flex-col border-l border-line bg-canvas max-[1120px]:absolute max-[1120px]:inset-y-0 max-[1120px]:right-0 max-[1120px]:z-30 max-[1120px]:shadow-pop max-[640px]:w-full',
+        floating && 'absolute inset-y-0 right-0 z-30 shadow-pop',
+      )}
       aria-label={`${agent.name} details`}
     >
       <div className="app-drag flex h-14 shrink-0 items-center gap-1 border-b border-line pl-5 pr-3">
@@ -56,7 +60,7 @@ export function DetailsPanel({ agent, conversation, onClose }: { agent: Agent; c
         <IconButton label="Close details" onClick={onClose}>
           <PanelRightClose size={17} strokeWidth={1.8} />
         </IconButton>
-        <div className="titlebar-spacer" />
+        {titlebar && <div className="titlebar-spacer" />}
       </div>
 
       <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto px-5 pb-10">
@@ -183,8 +187,9 @@ function Instructions({ text }: { text: string }) {
 
 /** Routines for this agent, drawn as a plain list: a green clock when active, a pause mark when not. */
 function Routines({ agent }: { agent: Agent }) {
-  const { attempt, openConversation } = useStore();
+  const { state, attempt, openConversation } = useStore();
   const schedules = useSchedules(agent.id);
+  const projectName = (id: string | null) => (id && state.projects.find((p) => p.id === id)?.name) || null;
   const [editing, setEditing] = useState<Schedule | 'new' | null>(null);
   const toggle = (s: Schedule) => void attempt(() => api.updateSchedule(s.id, { agentId: s.agentId, title: s.title, prompt: s.prompt, cadence: s.cadence, target: s.target, enabled: !s.enabled }));
 
@@ -207,6 +212,7 @@ function Routines({ agent }: { agent: Agent }) {
                 <button onClick={() => setEditing(s)} className="block w-full text-left">
                   <span className="block truncate text-[14px] text-ink">{s.title}</span>
                   <span className="block truncate text-[13px] text-muted">{s.enabled ? friendlyCadence(s.cadence) : 'Paused'}</span>
+                  <span className="block truncate text-[12px] text-faint">{projectName(s.projectId) ? `In ${projectName(s.projectId)}` : 'No project'}</span>
                 </button>
               </Tooltip>
               {s.lastStatus && s.lastStatus !== 'Started' && <div className="mt-0.5 text-[12px] text-warn-ink">{s.lastStatus}</div>}
