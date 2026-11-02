@@ -241,7 +241,7 @@ export function Composer({ conversation, running, disabledReason, placeholder = 
             ))}
           </div>
         )}
-        <div className="flex items-end gap-1.5 p-1.5">
+        <div className="flex items-end gap-1.5 p-1.5 max-[640px]:gap-1">
           <Tooltip label="Attach files">
             <button onClick={attach} className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line text-ink-2 transition-colors hover:bg-hover hover:text-ink" aria-label="Attach files">
               <Plus size={18} strokeWidth={1.8} />

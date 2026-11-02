@@ -236,7 +236,7 @@ function Transcript({ detail, agent, onRemember }: { detail: ConversationDetail;
         }}
         className="scroll-quiet h-full overflow-y-auto"
       >
-        <div className="chat-column px-5 pb-6 pt-2">
+        <div className="chat-column px-5 pb-6 pt-2 max-[640px]:px-3">
           {detail.messages.length === 0 && <EmptyConversation agent={agent} conversation={detail.conversation} />}
           {detail.messages.map((m, i) => {
             const prev = detail.messages[i - 1];
@@ -315,7 +315,7 @@ function MessageView({ message, run, detail, onRemember }: { message: Message; r
 
   if (message.kind === 'handoff-result') {
     return (
-      <div className="max-w-[88%] rounded-[20px] border border-line bg-panel px-4 py-3">
+      <div className="max-w-[88%] rounded-[20px] border border-line bg-panel px-4 py-3 max-[640px]:max-w-full">
         <div className="mb-2 flex items-center justify-between gap-3 text-[12px] text-muted">
           <span className="font-medium text-ink-2">{message.status === 'error' ? 'Handoff failed' : 'Handoff result'}</span>
           {message.linkConversationId && (
@@ -335,7 +335,7 @@ function MessageView({ message, run, detail, onRemember }: { message: Message; r
         {message.attachments.map((a) => (
           <AttachmentCard key={a.path} attachment={a} />
         ))}
-        {message.content && <div className="max-w-[78%] whitespace-pre-wrap break-words rounded-[20px] bg-user px-4 py-2.5 text-[15px] leading-[1.5] text-on-user">{message.content}</div>}
+        {message.content && <div className="max-w-[78%] max-[640px]:max-w-[85%] whitespace-pre-wrap break-words rounded-[20px] bg-user px-4 py-2.5 text-[15px] leading-[1.5] text-on-user">{message.content}</div>}
       </div>
     );
   }
@@ -366,18 +366,18 @@ function MessageView({ message, run, detail, onRemember }: { message: Message; r
         </div>
       )}
       {approvals.map((a) => (
-        <div key={a.id} className="w-full max-w-[88%]">
+        <div key={a.id} className="w-full max-w-[88%] max-[640px]:max-w-full">
           <ApprovalCard approval={a} />
         </div>
       ))}
       {message.content ? (
-        <div className="group flex w-full items-end gap-1">
-          <div className="min-w-0 max-w-[88%] rounded-[20px] bg-bubble px-4 py-2.5">
+        <div className="group flex w-full items-end gap-1 max-[640px]:flex-col max-[640px]:items-start max-[640px]:gap-0">
+          <div className="min-w-0 max-w-[88%] rounded-[20px] bg-bubble px-4 py-2.5 max-[640px]:max-w-full">
             <Markdown text={message.content} streaming={streaming} />
             {streaming && <span className="caret" aria-hidden="true" />}
           </div>
           {!streaming && (
-            <div className="flex shrink-0 items-center pb-1 text-faint opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+            <div className="flex shrink-0 items-center pb-1 text-faint opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 max-[640px]:pb-0 max-[640px]:pl-1.5 max-[640px]:pt-0.5 max-[640px]:opacity-100">
               <Tooltip label={copied ? 'Copied' : 'Copy'}>
                 <button
                   onClick={() => {
@@ -419,7 +419,7 @@ function MessageView({ message, run, detail, onRemember }: { message: Message; r
         </div>
       ) : null}
       {message.status === 'error' && message.error && (
-        <div className="mt-1.5 max-w-[88%] whitespace-pre-wrap rounded-2xl border border-bad-line bg-bad-bg px-3.5 py-2.5 text-[12.5px] text-bad-ink">{message.error}</div>
+        <div className="mt-1.5 max-w-[88%] whitespace-pre-wrap rounded-2xl border border-bad-line max-[640px]:max-w-full bg-bad-bg px-3.5 py-2.5 text-[12.5px] text-bad-ink">{message.error}</div>
       )}
       {message.status === 'interrupted' && <div className="mt-1 px-1 text-[12px] text-muted">{message.error ?? 'Stopped.'}</div>}
     </div>

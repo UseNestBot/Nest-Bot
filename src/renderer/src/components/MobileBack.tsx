@@ -16,13 +16,13 @@ export function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-/** Back to the chat list, first thing in a screen's header. Only shown at phone width. */
-export function MobileBack() {
+/** Back to the chat list (or `onBack`), first thing in a screen's header. Only shown at phone width. */
+export function MobileBack({ onBack, label = 'Back to chats' }: { onBack?: () => void; label?: string }) {
   const { navigate } = useStore();
   return (
     <button
-      onClick={() => navigate({ name: 'home' })}
-      aria-label="Back to chats"
+      onClick={onBack ?? (() => navigate({ name: 'home' }))}
+      aria-label={label}
       className="-ml-2 mr-0.5 hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-ink-2 active:bg-hover max-[640px]:inline-flex"
     >
       <ChevronLeft size={22} strokeWidth={2} />

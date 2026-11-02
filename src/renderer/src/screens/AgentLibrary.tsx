@@ -7,6 +7,7 @@ import { folderName } from '../format';
 import { AVATAR_COLORS, AVATAR_EYES, AVATAR_SHAPES, Avatar, EYES_LABEL, SHAPE_LABEL, randomAvatar } from '../components/Avatar';
 import { Button, Combobox, EmptyState, Field, Modal, ScreenHeader, Segmented, Select, Toggle, Tooltip, cx, inputClass } from '../components/ui';
 import { ProviderChoice } from '../components/ModelPicker';
+import { PHONE_QUERY, useMediaQuery } from '../components/MobileBack';
 
 function toDraft(a: Agent): AgentDraft {
   const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = a;
@@ -17,12 +18,17 @@ function toDraft(a: Agent): AgentDraft {
 export function AgentLibrary({ selected }: { selected?: string }) {
   const { state, navigate, startConversation } = useStore();
   const current = selected ? state.agents.find((a) => a.id === selected) : undefined;
+  // On a phone the list and the editor are separate screens, each the full width.
+  const phone = useMediaQuery(PHONE_QUERY);
+  const editing = phone && !!current;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <ScreenHeader
-        title="Agents"
-        subtitle={`${state.agents.length} agent${state.agents.length === 1 ? '' : 's'}`}
+        title={editing ? current.name : 'Agents'}
+        subtitle={editing ? PROVIDER_LABEL[current.provider] : `${state.agents.length} agent${state.agents.length === 1 ? '' : 's'}`}
+        onBack={editing ? () => navigate({ name: 'library' }) : undefined}
+        backLabel={editing ? 'Back to agents' : undefined}
         actions={
           <Button variant="primary" onClick={() => navigate({ name: 'library', agentId: 'new' })}>
             <Plus size={14} /> New agent
@@ -30,7 +36,7 @@ export function AgentLibrary({ selected }: { selected?: string }) {
         }
       />
       <div className="flex min-h-0 flex-1">
-        <div className="scroll-quiet w-[280px] shrink-0 overflow-y-auto border-r border-line p-2 max-[900px]:w-[220px]">
+        <div className={cx('scroll-quiet w-[280px] shrink-0 overflow-y-auto border-r border-line p-2 max-[900px]:w-[220px] max-[640px]:w-full max-[640px]:border-r-0', editing && 'hidden')}>
           {state.agents.map((a) => (
             <button
               key={a.id}
@@ -48,7 +54,7 @@ export function AgentLibrary({ selected }: { selected?: string }) {
             </button>
           ))}
         </div>
-        <div className="scroll-quiet min-w-0 flex-1 overflow-y-auto">
+        <div className={cx('scroll-quiet min-w-0 flex-1 overflow-y-auto', phone && !current && 'hidden')}>
           {current ? (
             <AgentEditor key={current.id} agent={current} initial={toDraft(current)} onChat={() => void startConversation(current.id)} />
           ) : (
@@ -88,7 +94,7 @@ function AgentEditor({ agent, initial, onChat }: { agent?: Agent; initial: Agent
   };
 
   return (
-    <div className="mx-auto max-w-[680px] px-6 py-6">
+    <div className="mx-auto max-w-[680px] px-6 py-6 max-[640px]:px-4 max-[640px]:py-4">
       <div className="mb-6 flex items-center gap-4">
         <span className="flex h-[76px] w-[76px] shrink-0 items-center justify-center rounded-[24px] bg-sunken">
           <Avatar spec={draft.avatar} size={58} />
