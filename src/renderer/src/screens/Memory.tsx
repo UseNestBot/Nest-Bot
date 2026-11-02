@@ -44,7 +44,7 @@ export function MemoryScreen() {
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <ScreenHeader title="Memory" subtitle="Plain-text notes stored on this computer. Sent to an agent only when they change." />
       <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[760px] px-6 py-6">
+        <div className="mx-auto max-w-[760px] px-6 py-6 max-[640px]:px-4 max-[640px]:py-4">
           <div className="mb-6 rounded-2xl border border-line bg-panel p-3">
             <textarea value={newText} onChange={(e) => setNewText(e.target.value)} rows={2} placeholder="Add a note, e.g. “I prefer metric units” or “The repo uses pnpm”" className={cx(inputClass, 'resize-y border-none px-1 focus:border-none')} />
             <div className="mt-2 flex items-center gap-2">

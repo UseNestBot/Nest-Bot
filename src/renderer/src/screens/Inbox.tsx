@@ -24,7 +24,7 @@ export function InboxScreen() {
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <ScreenHeader title="Inbox" subtitle="Approvals waiting on you, finished handoffs and failed runs" />
       <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[760px] px-6 py-6">
+        <div className="mx-auto max-w-[760px] px-6 py-6 max-[640px]:px-4 max-[640px]:py-4">
           {needsAction.length === 0 && rest.length === 0 && <EmptyState icon={<InboxIcon size={28} />} title="Nothing here">Approvals, handoff results and failures will show up here.</EmptyState>}
           {needsAction.length > 0 && (
             <List title="Needs your approval">

@@ -84,10 +84,10 @@ export function ModelPicker({ conversation, disabled }: { conversation: Conversa
           <button
             onClick={toggle}
             disabled={disabled}
-            className="inline-flex h-9 min-w-0 max-w-[220px] shrink-0 items-center gap-1.5 rounded-full px-3 text-[12.5px] text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-55"
+            className="inline-flex h-9 min-w-0 max-w-[220px] shrink-0 items-center gap-1.5 rounded-full px-3 text-[12.5px] max-[640px]:max-w-[120px] max-[640px]:gap-1 max-[640px]:px-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-55"
           >
             <span className="truncate">{modelName}</span>
-            {effectiveEffort && <span className="shrink-0 text-faint">{effortLabel(effectiveEffort)}</span>}
+            {effectiveEffort && <span className="shrink-0 text-faint max-[640px]:hidden">{effortLabel(effectiveEffort)}</span>}
             <ChevronDown size={13} className={cx('shrink-0 text-faint transition-transform duration-150', open && 'rotate-180')} />
           </button>
         </Tooltip>

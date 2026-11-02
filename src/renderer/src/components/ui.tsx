@@ -609,11 +609,11 @@ export function EmptyState({ icon, title, children }: { icon?: ReactNode; title:
   );
 }
 
-export function ScreenHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
+export function ScreenHeader({ title, subtitle, actions, onBack, backLabel }: { title: string; subtitle?: string; actions?: ReactNode; onBack?: () => void; backLabel?: string }) {
   return (
     <div className="app-drag flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line pl-6 pr-3 max-[640px]:pl-4">
       <div className="flex min-w-0 items-center">
-        <MobileBack />
+        <MobileBack onBack={onBack} label={backLabel} />
         <div className="min-w-0">
           <h1 className="truncate font-display text-[16px] font-semibold">{title}</h1>
           {subtitle && <div className="truncate text-[12px] text-muted">{subtitle}</div>}

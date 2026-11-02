@@ -124,7 +124,7 @@ function ProjectBody({ project }: { project: Project }) {
       </div>
 
       <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[760px] space-y-8 px-6 py-6">
+        <div className="mx-auto max-w-[760px] space-y-8 px-6 py-6 max-[640px]:px-4 max-[640px]:py-4">
           {/* Members */}
           <section {...dropProps} className={cx('-mx-2 rounded-[22px] px-2 pb-2 transition-colors', over && 'bg-hover ring-2 ring-accent/60')}>
             <SectionLabel
