@@ -59,7 +59,7 @@ jobs:
           echo "NEST_BUILD=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
           if [[ "$TAG" == *-* ]]; then echo "NEST_CHANNEL=beta" >> "$GITHUB_ENV"; else echo "NEST_CHANNEL=stable" >> "$GITHUB_ENV"; fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
