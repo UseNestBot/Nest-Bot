@@ -96,6 +96,7 @@ export function Sidebar() {
     <aside className="flex h-full w-[288px] shrink-0 flex-col border-r border-line bg-sidebar max-[900px]:w-[248px] max-[640px]:w-full max-[640px]:border-r-0 max-[640px]:pb-[env(safe-area-inset-bottom)]">
       <div className={cx('app-drag flex h-14 shrink-0 items-center justify-between pl-5 pr-3', BETA && 'galaxy-banner')}>
         <span className="flex items-center gap-2">
+          <NestLogo />
           <span className="font-display text-[17px] font-semibold tracking-[-0.01em]">Nest</span>
           {BETA && <span className="galaxy-chip">Beta</span>}
         </span>
@@ -537,5 +538,18 @@ function NavItem({ icon, label, active, onClick, badge }: { icon: React.ReactNod
       <span className="flex-1 text-left">{label}</span>
       {badge ? <span className="min-w-[20px] rounded-full bg-accent px-1.5 text-center text-[11px] font-semibold leading-[20px] text-white">{badge}</span> : null}
     </button>
+  );
+}
+
+/** The app icon (build/icon.svg), inlined so it stays crisp and needs no asset path. */
+function NestLogo() {
+  return (
+    <svg viewBox="0 0 100 100" className="size-[22px] shrink-0" aria-hidden="true">
+      <circle cx="50" cy="50" r="46" fill="#3b82f6" />
+      <g fill="none" stroke="#fff" strokeWidth="11" strokeLinecap="round">
+        <path d="M51.5 56L56.5 37" />
+        <path d="M69.5 56L74.5 37" />
+      </g>
+    </svg>
   );
 }
