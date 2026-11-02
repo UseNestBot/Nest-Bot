@@ -102,6 +102,28 @@ describe('terminal tools', () => {
     await a.runs.cancel(a.conv.id);
   });
 
+  it('takes special keys by name, since control characters arrive empty from a tool call', async () => {
+    const a = boot({ skip: true, terminal: true });
+    await a.runs.send(a.conv.id, 'work [slow]', []);
+    // Named Ctrl-C: sent as the real control character, and never asks.
+    expect((await a.tools.call(a.conv.id, 'terminal_send_keys', { key: 'ctrl+c' })).ok).toBe(true);
+    expect((await a.tools.call(a.conv.id, 'terminal_send_keys', { key: 'Ctrl+C' })).ok).toBe(true);
+    expect(a.term.calls).toEqual([`keys ${JSON.stringify('\u0003')}`, `keys ${JSON.stringify('\u0003')}`]);
+    // What used to happen: the control character is stripped, so keys arrives empty.
+    const empty = await a.tools.call(a.conv.id, 'terminal_send_keys', { keys: '' });
+    expect(empty.ok).toBe(false);
+    expect(empty.text).toContain('ctrl+c');
+    expect((await a.tools.call(a.conv.id, 'terminal_send_keys', { key: 'ctrl+q' })).text).toMatch(/Unknown key/);
+    // Text plus a key asks first (shown readably), and text stays literal: backslashes are not escapes.
+    const typing = a.tools.call(a.conv.id, 'terminal_send_keys', { keys: 'cd C:\\new', key: 'enter' });
+    const approval = await pendingApproval(a.db, a.conv.id);
+    expect(approval?.action).toBe(`${JSON.stringify('cd C:\\new')} [enter]`);
+    a.runs.respondApproval(approval!.id, 'allow');
+    expect((await typing).ok).toBe(true);
+    expect(a.term.calls.at(-1)).toBe(`keys ${JSON.stringify('cd C:\\new\r')}`);
+    await a.runs.cancel(a.conv.id);
+  });
+
   it('runs unasked only when the user turned "always ask" off and the agent skips permissions', async () => {
     const skipping = boot({ skip: true, terminal: true, alwaysAsk: false });
     await skipping.runs.send(skipping.conv.id, 'work [slow]', []);

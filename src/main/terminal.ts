@@ -435,7 +435,7 @@ export class TerminalHost {
       s = this.sessions.get(conversationId) ?? s;
       if (!s.ready) return { ok: false, text: 'The terminal did not start in time. Try again, or read it with terminal_read.' };
     }
-    if (s.busy) return { ok: false, text: `The terminal is busy (a command is running). Use terminal_read to see it, or terminal_send_keys with "\\u0003" to interrupt it.\n\n${this.read(conversationId, 20)}` };
+    if (s.busy) return { ok: false, text: `The terminal is busy (a command is running). Use terminal_read to see it, or terminal_send_keys with key "ctrl+c" to interrupt it.\n\n${this.read(conversationId, 20)}` };
     const oneLine = command.replace(/\r\n/g, '\n').trim();
     if (!oneLine) return { ok: false, text: 'command is required.' };
     // A multi-line script runs as one group, so the shell prompts (and reports) once.
@@ -468,12 +468,12 @@ export class TerminalHost {
     if (!res) {
       if (!this.sessions.has(conversationId)) return { ok: false, text: `The terminal closed.\n\n${out}` };
       if (this.sessions.get(conversationId) !== s) return { ok: false, text: `The command was stopped and the terminal restarted.\n\n${out}` };
-      return { ok: true, text: `Still running after ${Math.round(timeoutMs / 1000)}s (it keeps running in the terminal; the user can see it). Use terminal_read to check on it, or terminal_send_keys with "\\u0003" to stop it.\n\n${out}` };
+      return { ok: true, text: `Still running after ${Math.round(timeoutMs / 1000)}s (it keeps running in the terminal; the user can see it). Use terminal_read to check on it, or terminal_send_keys with key "ctrl+c" to stop it.\n\n${out}` };
     }
     return { ok: true, text: `Exit code ${res.code}\n\n${out || '(no output)'}` };
   }
 
-  /** Raw keys for interactive programs (answers to prompts, Ctrl-C as \u0003, arrows as escape codes). */
+  /** Raw keys for interactive programs (answers to prompts, Ctrl-C as \u0003, arrows as escape codes); the tools map named keys to these. */
   sendKeys(conversationId: string, keys: string): string {
     const s = this.sessions.get(conversationId);
     if (!s) return 'The terminal is not open. Use terminal_run first.';

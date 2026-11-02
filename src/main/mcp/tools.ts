@@ -234,6 +234,9 @@ export const BROWSER_TOOL_DEFS: ToolDef[] = [
   },
 ];
 
+/** Names agents use for special keys in terminal_send_keys (see TERMINAL_KEYS). */
+const TERMINAL_KEY_NAMES = ['ctrl+c', 'ctrl+d', 'ctrl+z', 'ctrl+l', 'enter', 'tab', 'escape', 'backspace', 'up', 'down', 'right', 'left'];
+
 export const TERMINAL_TOOL_DEFS: ToolDef[] = [
   {
     name: 'terminal_run',
@@ -254,10 +257,33 @@ export const TERMINAL_TOOL_DEFS: ToolDef[] = [
   },
   {
     name: 'terminal_send_keys',
-    description: 'Send raw keystrokes to the shared terminal, for interactive programs: answers to prompts ("y\n"), Ctrl-C ("\u0003") to stop a command, arrows as escape codes.',
-    inputSchema: obj({ keys: { type: 'string' } }, ['keys']),
+    description:
+      'Type into the shared terminal, for interactive programs and to stop commands. Send text in "keys" and/or a special key in "key" (pressed after the text). To stop a running command use key "ctrl+c"; to answer a prompt send keys "y" with key "enter".',
+    inputSchema: obj({
+      keys: { type: 'string', description: 'Text to type, exactly as written (backslashes stay literal). Nothing is submitted until key "enter".' },
+      key: { type: 'string', enum: TERMINAL_KEY_NAMES, description: 'A special key to press after the text.' },
+    }),
   },
 ];
+
+/**
+ * Special keys by name. Agents can't reliably send control characters through
+ * a tool call (they arrive empty), so Ctrl-C and friends are named instead.
+ */
+export const TERMINAL_KEYS: Record<string, string> = {
+  'ctrl+c': '\u0003',
+  'ctrl+d': '\u0004',
+  'ctrl+z': '\u001a',
+  'ctrl+l': '\u000c',
+  enter: '\r',
+  tab: '\t',
+  escape: '\u001b',
+  backspace: '\u007f',
+  up: '\u001b[A',
+  down: '\u001b[B',
+  right: '\u001b[C',
+  left: '\u001b[D',
+};
 
 /** Where a schedule's runs work, for approval cards and replies. */
 function worksIn(project: Project | null | undefined): string {
@@ -309,10 +335,14 @@ export class NestTools {
           return { ok: true, text: term.read(conversationId, lines) };
         }
         case 'terminal_send_keys': {
-          const keys = typeof args.keys === 'string' ? args.keys.slice(0, 5000) : '';
-          if (!keys) return { ok: false, text: 'keys is required.' };
+          const text = typeof args.keys === 'string' ? args.keys.slice(0, 5000) : '';
+          const keyName = typeof args.key === 'string' ? args.key.trim().toLowerCase() : '';
+          if (keyName && !(keyName in TERMINAL_KEYS)) return { ok: false, text: `Unknown key "${args.key}". Use one of: ${TERMINAL_KEY_NAMES.join(', ')}.` };
+          const keys = text + (keyName ? TERMINAL_KEYS[keyName] : '');
+          if (!keys) return { ok: false, text: 'Send text in "keys", a special key in "key" (for example "ctrl+c" to stop a command), or both.' };
           // Ctrl-C alone only stops things, so it never needs asking.
-          if (keys !== '\u0003' && !(await confirm(`${agentName} wants to type into the terminal`, JSON.stringify(keys).slice(1, -1)))) return { ok: false, text: 'The user declined these keystrokes.' };
+          const shown = [text && JSON.stringify(text), keyName && `[${keyName}]`].filter(Boolean).join(' ');
+          if (keys !== '\u0003' && !(await confirm(`${agentName} wants to type into the terminal`, shown))) return { ok: false, text: 'The user declined these keystrokes.' };
           return { ok: true, text: term.sendKeys(conversationId, keys) };
         }
         default:
