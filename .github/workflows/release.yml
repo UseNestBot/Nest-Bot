@@ -43,7 +43,7 @@ jobs:
               dist/*.deb
               dist/latest-linux.yml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
           # Full history: the build number in "v0.1.0:123" is the commit count.
@@ -59,7 +59,7 @@ jobs:
           echo "NEST_BUILD=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
           if [[ "$TAG" == *-* ]]; then echo "NEST_CHANNEL=beta" >> "$GITHUB_ENV"; else echo "NEST_CHANNEL=stable" >> "$GITHUB_ENV"; fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -85,7 +85,7 @@ jobs:
         shell: bash
         run: npx electron-builder --${{ matrix.platform }} --publish never '-c.nsis.artifactName=Nest-Setup-${version}-b${env.NEST_BUILD}.${ext}'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nest-${{ matrix.platform }}
           path: ${{ matrix.patterns }}
@@ -99,11 +99,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
