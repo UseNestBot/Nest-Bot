@@ -77,7 +77,7 @@ jobs:
         shell: bash
         run: npx electron-builder --${{ matrix.platform }} --publish never '-c.nsis.artifactName=Nest-Setup-${version}-b${env.NEST_BUILD}.${ext}'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nest-${{ matrix.platform }}
           path: ${{ matrix.patterns }}
