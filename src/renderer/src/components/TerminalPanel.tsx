@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalStateInfo } from '@shared/types';
 import { api, IS_REMOTE } from '../api';
-import { IconButton } from './ui';
+import { IconButton, Tooltip } from './ui';
 
 const HEIGHT_KEY = 'nest:terminal-height';
 const MIN_HEIGHT = 120;
@@ -41,6 +41,16 @@ function cssVar(name: string, fallback: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
+/** xterm colours from the current palette. */
+function terminalTheme() {
+  return {
+    background: cssVar('--nest-sunken', '#f5f5f7'),
+    foreground: cssVar('--nest-ink', '#111113'),
+    cursor: cssVar('--nest-ink', '#111113'),
+    selectionBackground: cssVar('--nest-selection', '#cfe0fb'),
+  };
+}
+
 function savedHeight(): number {
   try {
     const n = Number(localStorage.getItem(HEIGHT_KEY));
@@ -55,13 +65,30 @@ function savedHeight(): number {
  * The conversation's shell, shared with its agent: whatever either of you runs
  * shows here, and you can type into it at any time.
  */
-export function TerminalPanel({ conversationId, onClose }: { conversationId: string; onClose: () => void }) {
+export function TerminalPanel({ conversationId, agent, onClose }: { conversationId: string; agent: { id: string; name: string } | null; onClose: () => void }) {
   const host = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(savedHeight);
   const [info, setInfo] = useState<TerminalStateInfo | null>(null);
   const [exited, setExited] = useState(false);
   const [generation, setGeneration] = useState(0);
+  // Whether the agent may use this terminal (opt-in per agent, Settings → Connectors & tools).
+  const [shared, setShared] = useState<boolean | null>(null);
+  const agentId = agent?.id;
+  useEffect(() => {
+    setShared(null);
+    if (!agentId) return;
+    let alive = true;
+    void api.getAgentAccess(agentId).then((a) => alive && setShared(a.terminal), () => {});
+    return () => {
+      alive = false;
+    };
+  }, [agentId]);
+  const share = async () => {
+    if (!agentId) return;
+    const saved = await api.setAgentAccess(agentId, { ...(await api.getAgentAccess(agentId)), terminal: true }).catch(() => null);
+    if (saved) setShared(saved.terminal);
+  };
 
   useEffect(() => {
     const el = host.current;
@@ -72,13 +99,13 @@ export function TerminalPanel({ conversationId, onClose }: { conversationId: str
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: false,
-      theme: {
-        background: cssVar('--nest-sunken', '#f5f5f7'),
-        foreground: cssVar('--nest-ink', '#111113'),
-        cursor: cssVar('--nest-ink', '#111113'),
-        selectionBackground: cssVar('--nest-selection', '#cfe0fb'),
-      },
+      theme: terminalTheme(),
     });
+    // Follow light/dark switches while open (store.tsx sets data-theme on <html>).
+    const themeWatch = new MutationObserver(() => {
+      term.options.theme = terminalTheme();
+    });
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
@@ -136,6 +163,7 @@ export function TerminalPanel({ conversationId, onClose }: { conversationId: str
       input.dispose();
       resized.dispose();
       observer.disconnect();
+      themeWatch.disconnect();
       term.dispose();
     };
   }, [conversationId, generation]);
@@ -172,7 +200,7 @@ export function TerminalPanel({ conversationId, onClose }: { conversationId: str
   };
 
   return (
-    <div ref={panel} style={{ height }} className="relative flex shrink-0 flex-col border-t border-line bg-sunken">
+    <div ref={panel} style={{ height }} className="relative flex min-w-0 shrink-0 flex-col border-t border-line bg-sunken">
       <div
         role="separator"
         aria-orientation="horizontal"
@@ -184,6 +212,18 @@ export function TerminalPanel({ conversationId, onClose }: { conversationId: str
         <SquareTerminal size={14} className="shrink-0" />
         <span className="font-medium text-ink-2">Terminal</span>
         {info && <span className="min-w-0 truncate text-faint" title={info.cwd}>{info.cwd}</span>}
+        {agent && shared === false && (
+          <Tooltip label={`${agent.name} can’t use this terminal. Turning it on lets it run commands here (each one asks first unless you changed that in Settings).`}>
+            <button onClick={() => void share()} className="shrink-0 rounded-md px-1.5 py-0.5 text-[11.5px] font-medium text-accent hover:bg-hover">
+              Let {agent.name} use it
+            </button>
+          </Tooltip>
+        )}
+        {agent && shared === true && (
+          <Tooltip label="Turn this off in Settings → Connectors & tools">
+            <span className="shrink-0 cursor-default text-[11.5px] text-faint">Shared with {agent.name}</span>
+          </Tooltip>
+        )}
         {info?.action ? (
           <span className="ml-auto flex min-w-0 items-center gap-1.5 truncate text-accent">
             <Loader2 size={12} className="shrink-0 animate-spin" />
@@ -192,7 +232,18 @@ export function TerminalPanel({ conversationId, onClose }: { conversationId: str
         ) : (
           <span className="ml-auto" />
         )}
-        {info && !info.pty && <span className="shrink-0 text-faint" title="Full-screen programs need Python 3 (macOS/Linux)">basic mode</span>}
+        {info && !info.pty && (
+          <Tooltip
+            label={
+              info.shell === 'powershell'
+                ? 'Plain commands work. Full-screen programs don’t, and Ctrl-C stops what a command started (a PowerShell built-in restarts the shell).'
+                : 'Full-screen programs need Python 3.'
+            }
+            align="end"
+          >
+            <span className="shrink-0 cursor-default text-faint">basic mode</span>
+          </Tooltip>
+        )}
         {exited ? (
           <IconButton label="Start a new terminal" onClick={() => setGeneration((g) => g + 1)} className="h-6! w-6!">
             <Power size={13} />
@@ -206,7 +257,8 @@ export function TerminalPanel({ conversationId, onClose }: { conversationId: str
           <X size={14} />
         </IconButton>
       </div>
-      <div ref={host} className="nest-terminal min-h-0 flex-1 px-2 pt-1" />
+      {/* min-w-0 + overflow-hidden: xterm sizes its canvas in pixels, which must not hold the chat column open when the window narrows. */}
+      <div ref={host} className="nest-terminal min-h-0 min-w-0 flex-1 overflow-hidden px-2 pt-1" />
     </div>
   );
 }

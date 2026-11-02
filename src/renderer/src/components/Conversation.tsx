@@ -80,7 +80,7 @@ export function ConversationView({ detail, pane = SOLO }: { detail: Conversation
       <div className="flex min-w-0 flex-1 flex-col">
         <ConversationHeader detail={detail} agent={agent} pane={pane} onHandoff={() => setHandoffOpen(true)} detailsOpen={detailsOpen} detailsFloat={detailsFloat} onToggleDetails={() => setDetailsOpen(!detailsOpen)} terminalOpen={terminalOpen} onToggleTerminal={() => setTerminalOpen(!terminalOpen)} />
         <Transcript detail={detail} agent={agent} onRemember={setRemember} />
-        {terminalOpen && <TerminalPanel conversationId={conversation.id} onClose={() => setTerminalOpen(false)} />}
+        {terminalOpen && <TerminalPanel conversationId={conversation.id} agent={agent} onClose={() => setTerminalOpen(false)} />}
         <Composer conversation={conversation} running={running} active={pane.focused} disabledReason={disabledReason} placeholder={`Message ${agent?.name ?? 'agent'}`} />
       </div>
       {detailsOpen && agent && <DetailsPanel agent={agent} conversation={conversation} floating={detailsFloat} titlebar={pane.last} onClose={() => setDetailsOpen(false)} />}

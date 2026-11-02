@@ -95,7 +95,7 @@ export function Panes({ single }: { single: boolean }) {
             onMouseDownCapture={() => id !== focused && void openConversation(id)}
             onFocusCapture={() => id !== focused && void openConversation(id)}
             style={{ flexGrow: split ? (state.paneSizes[id] ?? 1) : 1, minWidth: split ? MIN_PANE_PX : undefined }}
-            className="relative flex h-full shrink basis-0"
+            className="relative flex h-full min-w-0 shrink basis-0"
           >
             {split && id === focused && <div className="pointer-events-none absolute inset-x-0 top-0 z-30 h-[2px] bg-accent" aria-hidden="true" />}
             <ConversationView detail={state.details[id]} pane={{ split, focused: id === focused, first: i === 0, last: i === panes.length - 1 }} />

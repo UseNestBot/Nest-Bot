@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 import { API_METHODS, type ApiMethod } from '@shared/ipc';
-import type { Attachment, NestEvent, RemoteDevice } from '@shared/types';
+import type { AgentAccess, Attachment, NestEvent, RemoteDevice } from '@shared/types';
 import type { RemoteStore } from './store';
 import { isPushSubscription } from './webpush';
 import { SERVICE_WORKER, webManifest } from './web';
@@ -43,7 +43,7 @@ export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
 ]);
 
 /** Settings a paired device can't change: which programs run, and how much they may do unasked. */
-export const REMOTE_LOCKED_SETTINGS = ['claudePath', 'codexPath', 'cursorPath', 'geminiPath', 'grokPath', 'allowSkipPermissions', 'skipPermissionsByDefault', 'allowApiKeyBilling'] as const;
+export const REMOTE_LOCKED_SETTINGS = ['claudePath', 'codexPath', 'cursorPath', 'geminiPath', 'grokPath', 'allowSkipPermissions', 'skipPermissionsByDefault', 'allowApiKeyBilling', 'terminalAlwaysAsk'] as const;
 
 /** Drop locked settings from a remote updateSettings patch. */
 export function remoteArgs(method: ApiMethod, args: unknown[]): unknown[] {
@@ -51,6 +51,16 @@ export function remoteArgs(method: ApiMethod, args: unknown[]): unknown[] {
   const patch = { ...((args[0] ?? {}) as Record<string, unknown>) };
   for (const k of REMOTE_LOCKED_SETTINGS) delete patch[k];
   return [patch];
+}
+
+/**
+ * A paired device may change an agent's connectors and browser, but not its
+ * terminal access: that would let the agent run commands on the PC.
+ */
+export function keepTerminalAccess(args: unknown[], current: (agentId: string) => AgentAccess): unknown[] {
+  const [agentId, access] = args;
+  if (typeof agentId !== 'string' || !access || typeof access !== 'object') return args;
+  return [agentId, { ...(access as AgentAccess), terminal: current(agentId).terminal }, ...args.slice(2)];
 }
 
 export type CallResult = { ok: true; value: unknown } | { ok: false; error: string };

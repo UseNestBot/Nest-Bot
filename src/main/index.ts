@@ -11,6 +11,7 @@ import { NestDb } from './db';
 import { PROVIDER_SETTINGS } from './settings';
 import { createHandlers, invokeHandler, registerIpc } from './ipc';
 import { RemoteHost } from './remote/host';
+import { keepTerminalAccess } from './remote/server';
 import { ClaudeProvider } from './providers/claude';
 import { CodexProvider } from './providers/codex';
 import { AcpProvider } from './providers/acp';
@@ -229,7 +230,10 @@ app.whenReady().then(() => {
       const access = db.getAgentAccess(agentId);
       return access.browser && access.browserMode === 'nest';
     },
-  }, terminalHost);
+  }, {
+    host: terminalHost,
+    enabledFor: (agentId) => db.getAgentAccess(agentId).terminal,
+  });
   // Codex and Claude Code run this script as their own process, which can't read inside app.asar,
   // so the installed app ships it unpacked (package.json "asarUnpack").
   const mcpScript = path.join(__dirname, 'nest-mcp.mjs').replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
@@ -263,7 +267,7 @@ app.whenReady().then(() => {
     file: path.join(app.getPath('userData'), 'remote.json'),
     staticDir: path.join(__dirname, '../renderer'),
     uploadsDir: path.join(app.getPath('userData'), 'uploads'),
-    call: (method, args) => invokeHandler(handlers, method, args),
+    call: (method, args) => invokeHandler(handlers, method, method === 'setAgentAccess' ? keepTerminalAccess(args, (id) => db.getAgentAccess(id)) : args),
     onChange: () => broadcast({ type: 'remote-changed' }),
   });
   remote = remoteHost;

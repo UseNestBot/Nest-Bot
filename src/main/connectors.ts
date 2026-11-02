@@ -281,6 +281,7 @@ export function sanitizeAccess(a: Partial<AgentAccess> | null | undefined): Agen
     codexConnectors: list(a?.codexConnectors),
     browser: typeof a?.browser === 'boolean' ? a.browser : DEFAULT_AGENT_ACCESS.browser,
     browserMode: a?.browserMode === 'chrome' ? 'chrome' : 'nest',
+    terminal: a?.terminal === true,
   };
 }
 

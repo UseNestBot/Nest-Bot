@@ -496,6 +496,8 @@ export interface AppSettings {
   allowSkipPermissions: boolean;
   /** With skipping allowed: every agent skips unless it (or a conversation) is set to always ask. */
   skipPermissionsByDefault: boolean;
+  /** On by default: an agent's terminal commands and keystrokes wait for approval even when it skips permissions. */
+  terminalAlwaysAsk: boolean;
   // Context
   /** Max characters of transcript transferred when switching provider or handing off. */
   transferBudgetChars: number;
@@ -532,6 +534,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   allowApiKeyBilling: false,
   allowSkipPermissions: false,
   skipPermissionsByDefault: false,
+  terminalAlwaysAsk: true,
   transferBudgetChars: 8000,
   claudePath: null,
   codexPath: null,
@@ -654,11 +657,13 @@ export interface AgentAccess {
    * the user's Chrome through Claude in Chrome (Claude Code only).
    */
   browserMode: BrowserMode;
+  /** Let the agent use each chat's shared terminal (the terminal_* tools). Off by default: it runs outside the provider's sandbox. */
+  terminal: boolean;
 }
 
 export type BrowserMode = 'nest' | 'chrome';
 
-export const DEFAULT_AGENT_ACCESS: AgentAccess = { claudeConnectors: null, codexConnectors: null, browser: false, browserMode: 'nest' };
+export const DEFAULT_AGENT_ACCESS: AgentAccess = { claudeConnectors: null, codexConnectors: null, browser: false, browserMode: 'nest', terminal: false };
 
 /** The agent's built-in browser, as shown in the live viewport. */
 export interface BrowserStateInfo {

@@ -212,6 +212,7 @@ describe('agent access', () => {
       codexConnectors: null,
       browser: false,
       browserMode: 'nest',
+      terminal: false,
     });
     expect(sanitizeAccess({ browser: true, browserMode: 'chrome' }).browserMode).toBe('chrome');
     expect(sanitizeAccess({ browser: true, browserMode: 'evil' as unknown as 'nest' }).browserMode).toBe('nest');
@@ -284,15 +285,15 @@ describe('connectors end to end (fake CLIs)', () => {
     const { db } = boot();
     const a = makeAgent(db, 'claude');
     expect(db.getAgentAccess(a.id)).toEqual(DEFAULT_AGENT_ACCESS);
-    db.setAgentAccess(a.id, { claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: true, browserMode: 'chrome' });
+    db.setAgentAccess(a.id, { claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: true, browserMode: 'chrome', terminal: false });
     db.updateAgent(a.id, { ...a, name: 'Renamed' });
-    expect(db.getAgentAccess(a.id)).toEqual({ claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: true, browserMode: 'chrome' });
+    expect(db.getAgentAccess(a.id)).toEqual({ claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: true, browserMode: 'chrome', terminal: false });
   });
 
   it('restricts a Claude agent to one connector and gives it the browser', async () => {
     const { db, runs } = boot();
     const a = makeAgent(db, 'claude');
-    db.setAgentAccess(a.id, { claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: true, browserMode: 'chrome' });
+    db.setAgentAccess(a.id, { claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: true, browserMode: 'chrome', terminal: false });
     const conv = db.createConversation(a);
     // The connector list is fetched before the first restricted turn.
     const report = JSON.parse(await reply(db, runs, conv.id, '[args]'));
@@ -307,7 +308,7 @@ describe('connectors end to end (fake CLIs)', () => {
   it('runs a Claude agent with no connectors under --strict-mcp-config and without the browser', async () => {
     const { db, runs } = boot();
     const a = makeAgent(db, 'claude');
-    db.setAgentAccess(a.id, { claudeConnectors: [], codexConnectors: null, browser: false, browserMode: 'nest' });
+    db.setAgentAccess(a.id, { claudeConnectors: [], codexConnectors: null, browser: false, browserMode: 'nest', terminal: false });
     const report = JSON.parse(await reply(db, runs, db.createConversation(a).id, '[args]'));
     expect(report).toMatchObject({ strict: true, chrome: false, disallowed: 'AskUserQuestion', mcpConfig: '{"mcpServers":{}}' });
   });
@@ -315,7 +316,7 @@ describe('connectors end to end (fake CLIs)', () => {
   it('refuses a disallowed server’s tool without asking the user', async () => {
     const { db, runs } = boot();
     const a = makeAgent(db, 'claude');
-    db.setAgentAccess(a.id, { claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: false, browserMode: 'nest' });
+    db.setAgentAccess(a.id, { claudeConnectors: ['claude.ai Gmail'], codexConnectors: null, browser: false, browserMode: 'nest', terminal: false });
     const conv = db.createConversation(a);
     expect(await reply(db, runs, conv.id, '[mcp-call]')).toBe('mcp:deny');
     expect(db.listApprovals(conv.id)).toEqual([]);
@@ -327,7 +328,7 @@ describe('connectors end to end (fake CLIs)', () => {
     const a = makeAgent(db, 'codex');
     const conv = db.createConversation(a);
     expect(JSON.parse(await reply(db, runs, conv.id, '[config]'))).toBeNull();
-    db.setAgentAccess(a.id, { claudeConnectors: null, codexConnectors: ['app:connector_gmail'], browser: true, browserMode: 'chrome' });
+    db.setAgentAccess(a.id, { claudeConnectors: null, codexConnectors: ['app:connector_gmail'], browser: true, browserMode: 'chrome', terminal: false });
     expect(JSON.parse(await reply(db, runs, conv.id, '[config]'))).toEqual({
       'apps._default.enabled': false,
       'apps.connector_gmail.enabled': true,

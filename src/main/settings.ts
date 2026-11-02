@@ -106,6 +106,7 @@ const CLEAN: { [K in keyof AppSettings]: Clean<K> } = {
   allowApiKeyBilling: bool,
   allowSkipPermissions: bool,
   skipPermissionsByDefault: bool,
+  terminalAlwaysAsk: bool,
   transferBudgetChars: (v) => clampStep(v, 1000, 40000, 1, 8000),
   claudePath: optionalPath,
   codexPath: optionalPath,

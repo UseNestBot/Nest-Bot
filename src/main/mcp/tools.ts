@@ -232,23 +232,27 @@ export class NestTools {
     private readonly onAgentsChanged: () => void,
     /** The built-in browser and who may use it; absent in tests and when unavailable. */
     private readonly browser?: { host: BrowserTools; enabledFor: (agentId: string) => boolean },
-    /** The shared terminal; absent in tests. */
-    private readonly terminal?: TerminalTools,
+    /** The shared terminal and which agents may use it (opt-in per agent); absent in tests. */
+    private readonly terminal?: { host: TerminalTools; enabledFor: (agentId: string) => boolean },
   ) {}
 
   /** Tools this conversation's agent may see: browser tools only when its Browser is set to the Nest browser. */
   listFor(conversationId: string): ToolDef[] {
     const agentId = this.db.getConversation(conversationId)?.agentId;
     const browser = Boolean(agentId && this.browser?.enabledFor(agentId));
-    return [...TOOL_DEFS, ...(browser ? BROWSER_TOOL_DEFS : []), ...(this.terminal ? TERMINAL_TOOL_DEFS : [])];
+    const terminal = Boolean(agentId && this.terminal?.enabledFor(agentId));
+    return [...TOOL_DEFS, ...(browser ? BROWSER_TOOL_DEFS : []), ...(terminal ? TERMINAL_TOOL_DEFS : [])];
   }
 
-  private async terminalCall(conversationId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
-    const term = this.terminal;
-    if (!term) return { ok: false, text: 'The terminal is not available.' };
-    // The terminal runs outside the provider's own sandbox, so commands and keystrokes ask first unless permissions are skipped.
+  private async terminalCall(conversationId: string, agentId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const term = this.terminal?.host;
+    if (!term || !this.terminal?.enabledFor(agentId))
+      return { ok: false, text: `The terminal is turned off for this agent. The user can turn it on in Nest → Settings → ${'Connectors & tools'}, or from the chat's terminal panel.` };
+    // The terminal runs outside the provider's own sandbox, so commands and keystrokes ask first: always, unless the
+    // user turned off Settings → Permissions → "Always ask before terminal commands" and this agent skips permissions.
+    const force = this.db.getSettings().terminalAlwaysAsk;
     const confirm = async (title: string, action: string) =>
-      (await this.runs.requestLocalApproval(conversationId, { title, action, target: null, reason: null, detail: null, approveLabel: 'Run' })) === 'allow';
+      (await this.runs.requestLocalApproval(conversationId, { title, action, target: null, reason: null, detail: null, approveLabel: 'Run' }, force)) === 'allow';
     try {
       switch (name) {
         case 'terminal_run': {
@@ -279,7 +283,7 @@ export class NestTools {
 
   private async browserCall(conversationId: string, agentId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
     const host = this.browser?.host;
-    if (!host || !this.browser?.enabledFor(agentId)) return { ok: false, text: 'The browser is turned off for this agent. The user can turn it on in Nest → Settings → Connectors & browser.' };
+    if (!host || !this.browser?.enabledFor(agentId)) return { ok: false, text: 'The browser is turned off for this agent. The user can turn it on in Nest → Settings → Connectors & tools.' };
     const ref = Math.round(Number(args.ref));
     const confirm = async (what: string, detail: string | null) =>
       (await this.runs.requestLocalApproval(conversationId, { title: `${agentName} wants to ${what} in its browser`, action: detail ?? what, target: null, reason: null, detail: null, approveLabel: 'Allow' })) === 'allow';
@@ -323,7 +327,7 @@ export class NestTools {
     const me = conversation ? this.db.getAgent(conversation.agentId, true) : null;
     if (!conversation || !me) return { ok: false, text: 'This conversation no longer exists in Nest.' };
     if (name.startsWith('browser_')) return this.browserCall(conversationId, me.id, me.name, name, args);
-    if (name.startsWith('terminal_')) return this.terminalCall(conversationId, me.name, name, args);
+    if (name.startsWith('terminal_')) return this.terminalCall(conversationId, me.id, me.name, name, args);
     const str = (k: string, max = 20000) => (typeof args[k] === 'string' ? (args[k] as string).trim().slice(0, max) : '');
 
     switch (name) {
