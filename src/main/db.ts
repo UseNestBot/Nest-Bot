@@ -9,6 +9,7 @@ import {
   type AgentAccess,
   type AgentDraft,
   type AppSettings,
+  type BackupInfo,
   type Approval,
   type Conversation,
   type Handoff,
@@ -24,7 +25,8 @@ import {
   type Schedule,
   type ScheduleDraft,
 } from '@shared/types';
-import { backupDatabase } from './backup';
+import { backupDatabase, listBackupInfo } from './backup';
+import { migrateLegacySettings } from './settings';
 
 type Row = Record<string, SQLInputValue>;
 
@@ -240,11 +242,20 @@ function withoutSkip(p: PermissionSettings): PermissionSettings {
 export class NestDb {
   readonly db: DatabaseSync;
 
-  constructor(file: string) {
+  constructor(readonly file: string) {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;');
     backupDatabase(this.db, file, n((this.db.prepare('PRAGMA user_version').get() as Row).user_version), MIGRATIONS.length);
     this.migrate();
+  }
+
+  /** Snapshot the database now, whatever the last backup's age. */
+  backUpNow(): boolean {
+    return backupDatabase(this.db, this.file, MIGRATIONS.length, MIGRATIONS.length, Date.now(), true) !== null;
+  }
+
+  listBackups(): BackupInfo[] {
+    return this.file === ':memory:' ? [] : listBackupInfo(this.file);
   }
 
   private migrate(): void {
@@ -339,11 +350,16 @@ export class NestDb {
   // ---- settings -----------------------------------------------------------
 
   getSettings(): AppSettings {
-    const rows = this.all('SELECT key, value FROM settings');
+    const stored: Record<string, unknown> = {};
+    for (const r of this.all('SELECT key, value FROM settings')) stored[String(r.key)] = json<unknown>(r.value, undefined);
+    migrateLegacySettings(stored);
     const out: Record<string, unknown> = { ...DEFAULT_SETTINGS };
-    for (const r of rows) {
-      const key = String(r.key);
-      if (key in DEFAULT_SETTINGS) out[key] = json(r.value, null);
+    for (const [key, value] of Object.entries(stored)) {
+      // An unreadable value keeps the default rather than becoming null.
+      if (!(key in DEFAULT_SETTINGS) || value === undefined) continue;
+      const fallback = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
+      // Objects gain fields over time: fill ones an older build didn't store.
+      out[key] = fallback && typeof fallback === 'object' && !Array.isArray(fallback) && value && typeof value === 'object' ? { ...fallback, ...value } : value;
     }
     return out as unknown as AppSettings;
   }

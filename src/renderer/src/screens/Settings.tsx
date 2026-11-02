@@ -1,22 +1,29 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Blocks, Bot, Brain, Copy, Database, ExternalLink, FolderOpen, Info, Keyboard, LogIn, LogOut, MessageSquare, Mic, Palette, Plug, RefreshCw, Settings2, ShieldCheck, Smartphone } from 'lucide-react';
+import { Archive, Blocks, Bot, Brain, Check, Copy, Database, ExternalLink, FolderOpen, Info, Keyboard, LogIn, LogOut, MessageSquare, Mic, Palette, Plug, RefreshCw, Settings2, ShieldCheck, Smartphone } from 'lucide-react';
 import { DICTATION_MODELS, type DictationModelStatus } from '@shared/dictation';
 import {
   API_PROVIDERS,
   CLI_PROVIDERS,
+  DEFAULT_SETTINGS,
   PROVIDER_LABEL,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN,
+  UI_SCALE_STEP,
+  type AccentColor,
   type ApiKeyState,
   type ApiProviderId,
   type AppSettings,
   type CliProviderId,
   type AgentAccess,
   type AppInfo,
+  type BackupInfo,
   type ClaudePermissionMode,
   type CodexApprovalPolicy,
   type CodexSandboxMode,
   type Connector,
   type ConnectorInventory,
   type LoginStart,
+  type NotifyOn,
   type ProviderId,
   type ProviderStatus,
   type RemoteState,
@@ -24,14 +31,23 @@ import {
 import { IS_REMOTE, api } from '../api';
 import { MobileBack } from '../components/MobileBack';
 import { disablePush, enablePush, forget, pushEnabled, pushSupported } from '../web/client';
-import { relativeTime } from '../format';
+import { formatBytes, relativeTime, statusLabel } from '../format';
 import { useStore, type SettingsSection } from '../store';
-import { formatBytes, statusLabel } from '../format';
 import { UpdateStatus } from '../components/Update';
 import { RELEASE_CHANNEL, versionLabel } from '@shared/build';
 import { Button, Segmented, Select, Toggle, Tooltip, cx, inputClass } from '../components/ui';
 import { dictationEngine, useModelDownload } from '../dictation/dictation';
 import { confirmDialog } from '../components/confirm';
+import { useModels, usableProviders } from '../components/ModelPicker';
+
+// Words for the PC's own desktop. A paired phone only sees sections that work there.
+const UA = typeof navigator === 'undefined' ? '' : navigator.userAgent;
+const OS: 'windows' | 'mac' | 'linux' = /Windows/.test(UA) ? 'windows' : /Mac OS X/.test(UA) && !/iPhone|iPad/.test(UA) ? 'mac' : 'linux';
+const OS_NAME = { windows: 'Windows', mac: 'macOS', linux: 'your desktop' }[OS];
+const FILE_MANAGER = { windows: 'Explorer', mac: 'Finder', linux: 'file manager' }[OS];
+const HOME = OS === 'windows' ? '%USERPROFILE%' : '~';
+const SEP = OS === 'windows' ? '\\' : '/';
+const KEY_PROTECTION = { windows: 'Windows data protection', mac: 'the macOS Keychain', linux: 'your system keyring' }[OS];
 
 const SECTIONS: Array<{ id: SettingsSection; label: string; icon: typeof Settings2 }> = [
   { id: 'general', label: 'General', icon: Settings2 },
@@ -57,7 +73,9 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
   const { navigate } = useStore();
   const [info, setInfo] = useState<AppInfo | null>(null);
   const loadInfo = useCallback(() => void api.getAppInfo().then(setInfo).catch(() => {}), []);
-  useEffect(loadInfo, [loadInfo, section]);
+  // Counts and sizes only show on these sections; others use the paths, which rarely change.
+  const needsFreshInfo = section === 'data' || section === 'memory';
+  useEffect(loadInfo, [loadInfo, needsFreshInfo]);
 
   return (
     <div className="flex h-full min-w-0 flex-1">
@@ -102,7 +120,7 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
             {section === 'general' && <General info={info} onChanged={loadInfo} />}
             {section === 'appearance' && <Appearance />}
             {section === 'agents' && <AgentTools />}
-          {section === 'connectors' && <Connectors />}
+            {section === 'connectors' && <Connectors />}
             {section === 'conversations' && <Conversations />}
             {section === 'voice' && <Voice />}
             {section === 'providers' && <Providers />}
@@ -192,7 +210,7 @@ function General({ info, onChanged }: { info: AppInfo | null; onChanged: () => v
           </Button>
           {info && (
             <Button size="sm" variant="ghost" onClick={() => void attempt(() => api.openFolder(info.effectiveDefaultWorkspace))}>
-              Open in Explorer
+              Open in {FILE_MANAGER}
             </Button>
           )}
           {s.defaultWorkspace && (
@@ -204,40 +222,97 @@ function General({ info, onChanged }: { info: AppInfo | null; onChanged: () => v
                 onChanged();
               }}
             >
-              Reset to Documents\Nest
+              Reset to Documents{SEP}Nest
             </Button>
           )}
         </div>
       </Group>
-      <Group title="New agents">
-        <Row label="Default provider" description="Preselected when you create an agent. Each agent and conversation can still use either.">
-          <Segmented<ProviderId>
+      <Group title="New agents" footer="Each agent and conversation can still change both.">
+        <Row label="Default provider" description="Preselected when you create an agent, and used when an agent creates one.">
+          <Select<ProviderId>
+            label="Default provider"
+            className="w-52"
+            align="end"
             value={s.defaultProvider}
             onChange={(defaultProvider) => void updateSettings({ defaultProvider })}
-            options={[
-              { value: 'claude', label: 'Claude Code' },
-              { value: 'codex', label: 'Codex' },
-            ]}
+            options={usableProviders(state.statuses, s.defaultProvider).map((p) => ({ value: p, label: PROVIDER_LABEL[p], hint: state.statuses[p] ? statusLabel(state.statuses[p]) : undefined }))}
           />
         </Row>
+        <DefaultModelRow provider={s.defaultProvider} />
       </Group>
-      <Group title="Notifications">
-        <Row label="Notify me in the background" description="Show a Windows notification when an agent replies, fails, or needs approval while Nest isn’t the active window.">
+      <Group title="Notifications" footer="Phones paired in Remote access get the same notifications, with their own on/off switch.">
+        <Row label="Notify me in the background" description={`Show a ${OS === 'linux' ? 'desktop' : OS_NAME} notification while Nest isn’t the active window.`}>
           <Toggle checked={s.notifyWhenUnfocused} onChange={(notifyWhenUnfocused) => void updateSettings({ notifyWhenUnfocused })} label="Background notifications" />
+        </Row>
+        {(
+          [
+            ['approval', 'An agent needs approval'],
+            ['failed', 'A run fails'],
+            ['finished', 'An agent replies'],
+          ] as Array<[keyof NotifyOn, string]>
+        ).map(([kind, label]) => (
+          <Row key={kind} label={<span className="font-normal">{label}</span>}>
+            <Toggle checked={s.notifyOn[kind]} onChange={(on) => void updateSettings({ notifyOn: { ...s.notifyOn, [kind]: on } })} label={label} />
+          </Row>
+        ))}
+        <Row label="Play a sound" description="For approvals and failures. Replies always arrive silently.">
+          <Toggle checked={s.notificationSound} onChange={(notificationSound) => void updateSettings({ notificationSound })} label="Notification sound" />
         </Row>
       </Group>
     </>
   );
 }
 
+function DefaultModelRow({ provider }: { provider: ProviderId }) {
+  const { state, updateSettings } = useStore();
+  const models = useModels(provider);
+  const current = state.settings.defaultModels[provider] ?? '';
+  const choices = (models ?? []).filter((m) => m.id);
+  // A saved model the provider no longer lists stays selectable so it can be seen and changed.
+  const options = [
+    { value: '', label: `${PROVIDER_LABEL[provider]} default` },
+    ...choices.map((m) => ({ value: m.id, label: m.label })),
+    ...(current && !choices.some((m) => m.id === current) ? [{ value: current, label: current, hint: 'Not listed by the provider' }] : []),
+  ];
+  return (
+    <Row label="Default model" description={models ? 'For new agents on this provider.' : 'Loading models…'}>
+      <Select<string>
+        label="Default model"
+        className="w-52"
+        align="end"
+        value={current}
+        onChange={(model) => {
+          const { [provider]: _, ...rest } = state.settings.defaultModels;
+          void updateSettings({ defaultModels: model ? { ...rest, [provider]: model } : rest });
+        }}
+        options={options}
+      />
+    </Row>
+  );
+}
+
+const ACCENTS: Array<{ value: AccentColor; label: string; swatch: string }> = [
+  { value: 'blue', label: 'Blue', swatch: '#3b82f6' },
+  { value: 'violet', label: 'Violet', swatch: '#7c5cf0' },
+  { value: 'green', label: 'Green', swatch: '#1f9d63' },
+  { value: 'orange', label: 'Orange', swatch: '#e2701f' },
+  { value: 'pink', label: 'Pink', swatch: '#d9468a' },
+  { value: 'graphite', label: 'Graphite', swatch: '#5f5f68' },
+];
+
+const APPEARANCE_KEYS = ['theme', 'darkStyle', 'accentColor', 'uiScale', 'density', 'chatWidth', 'uiFont', 'codeFont', 'reduceMotion'] as const;
+
 function Appearance() {
   const { state, updateSettings } = useStore();
   const s = state.settings;
+  const [scale, setScale] = useState(s.uiScale);
+  useEffect(() => setScale(s.uiScale), [s.uiScale]);
+  const isDefault = APPEARANCE_KEYS.every((k) => s[k] === DEFAULT_SETTINGS[k]);
   return (
     <>
-      <Title subtitle="How Nest looks on this computer.">Appearance</Title>
-      <Group>
-        <Row label="Theme" description="System follows your Windows light or dark mode.">
+      <Title subtitle="How Nest looks. Shared with phones paired in Remote access.">Appearance</Title>
+      <Group title="Colour">
+        <Row label="Theme" description={`System follows ${OS === 'linux' ? 'your desktop’s' : `${OS_NAME}’s`} light or dark mode.`}>
           <Segmented
             value={s.theme}
             onChange={(theme) => void updateSettings({ theme })}
@@ -248,14 +323,70 @@ function Appearance() {
             ]}
           />
         </Row>
-        <Row label="Text size" description="Scales text and spacing across the whole app.">
+        {s.theme !== 'light' && (
+          <Row label="Dark style" description="Black saves power on OLED screens.">
+            <Segmented
+              value={s.darkStyle}
+              onChange={(darkStyle) => void updateSettings({ darkStyle })}
+              options={[
+                { value: 'dim', label: 'Dim' },
+                { value: 'black', label: 'Black' },
+              ]}
+            />
+          </Row>
+        )}
+        <Row label="Accent colour" description="Switches, links, focus rings and selected text.">
+          <div className="flex gap-1.5" role="radiogroup" aria-label="Accent colour">
+            {ACCENTS.map((a) => (
+              <Tooltip key={a.value} label={a.label}>
+                <button
+                  role="radio"
+                  aria-checked={s.accentColor === a.value}
+                  aria-label={a.label}
+                  onClick={() => void updateSettings({ accentColor: a.value })}
+                  className={cx('flex h-6 w-6 items-center justify-center rounded-full ring-offset-2 ring-offset-panel', s.accentColor === a.value && 'ring-2 ring-line-strong')}
+                  style={{ background: a.swatch }}
+                >
+                  {s.accentColor === a.value && <Check size={13} className="text-white" />}
+                </button>
+              </Tooltip>
+            ))}
+          </div>
+        </Row>
+      </Group>
+      <Group title="Layout">
+        <Row label="Interface size" description="Scales text and spacing across the whole app.">
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min={UI_SCALE_MIN}
+              max={UI_SCALE_MAX}
+              step={UI_SCALE_STEP}
+              value={scale}
+              aria-label="Interface size"
+              onChange={(e) => setScale(Number(e.target.value))}
+              // Applied on release: zooming while dragging moves the slider out from under the pointer.
+              onPointerUp={() => scale !== s.uiScale && void updateSettings({ uiScale: scale })}
+              onKeyUp={() => scale !== s.uiScale && void updateSettings({ uiScale: scale })}
+              className="w-36 accent-[var(--nest-accent)]"
+            />
+            <button
+              className="w-11 text-right text-[12.5px] tabular-nums text-ink-2 hover:text-ink"
+              onClick={() => void updateSettings({ uiScale: 100 })}
+              title="Reset to 100%"
+            >
+              {scale}%
+            </button>
+          </div>
+        </Row>
+        <Row label="Density" description="Padding and gaps in lists, menus and the transcript.">
           <Segmented
-            value={s.textSize}
-            onChange={(textSize) => void updateSettings({ textSize })}
+            value={s.density}
+            onChange={(density) => void updateSettings({ density })}
             options={[
-              { value: 'small', label: 'Small' },
+              { value: 'compact', label: 'Compact' },
               { value: 'default', label: 'Default' },
-              { value: 'large', label: 'Large' },
+              { value: 'comfortable', label: 'Roomy' },
             ]}
           />
         </Row>
@@ -271,7 +402,48 @@ function Appearance() {
           />
         </Row>
       </Group>
+      <Group title="Fonts" footer="Use the names of fonts installed on this computer, separated by commas. Nest falls back to its own fonts for anything missing.">
+        <FontRow label="Interface font" setting="uiFont" placeholder="Built-in (Segoe UI, system)" />
+        <FontRow label="Code font" setting="codeFont" placeholder="Built-in (Cascadia Mono, monospace)" />
+      </Group>
+      <Group title="Accessibility">
+        <Row label="Reduce motion" description="Turn off animations and transitions.">
+          <Toggle checked={s.reduceMotion} onChange={(reduceMotion) => void updateSettings({ reduceMotion })} label="Reduce motion" />
+        </Row>
+      </Group>
+      {!isDefault && (
+        <Button size="sm" variant="ghost" onClick={() => void updateSettings(Object.fromEntries(APPEARANCE_KEYS.map((k) => [k, DEFAULT_SETTINGS[k]])))}>
+          <RefreshCw size={13} /> Reset appearance
+        </Button>
+      )}
     </>
+  );
+}
+
+function FontRow({ label, setting, placeholder }: { label: string; setting: 'uiFont' | 'codeFont'; placeholder: string }) {
+  const { state, updateSettings } = useStore();
+  const saved = state.settings[setting];
+  const [draft, setDraft] = useState(saved);
+  useEffect(() => setDraft(saved), [saved]);
+  const commit = () => {
+    const next = draft.trim();
+    if (next !== saved) void updateSettings({ [setting]: next });
+    else setDraft(saved);
+  };
+  return (
+    <Row label={label} stacked>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+        placeholder={placeholder}
+        spellCheck={false}
+        aria-label={label}
+        className={cx(inputClass, setting === 'codeFont' && 'font-mono text-[12.5px]')}
+        style={draft.trim() ? { fontFamily: draft } : undefined}
+      />
+    </Row>
   );
 }
 
@@ -640,7 +812,7 @@ function Voice() {
       <Group title="Using dictation">
         <Row label={<span className="font-normal">Click the microphone, speak, then click it again. The text appears where your cursor is, ready to edit before you send.</span>} />
         <Row label={<span className="font-normal">Hold Ctrl+Shift+Space while you talk and let go to insert the text, or tap it once to start and again to stop. Enter inserts, Esc discards.</span>} />
-        <Row label={<span className="font-normal">If Nest can’t hear you, allow microphone access for desktop apps in Windows Settings → Privacy & security → Microphone.</span>} />
+        <Row label={<span className="font-normal">If Nest can’t hear you, {OS === 'windows' ? 'allow microphone access for desktop apps in Windows Settings → Privacy & security → Microphone.' : OS === 'mac' ? 'allow Nest under System Settings → Privacy & Security → Microphone.' : 'check that your microphone is selected and unmuted in your system’s sound settings.'}</span>} />
       </Group>
     </>
   );
@@ -819,7 +991,7 @@ function ApiKeys() {
   return (
     <Group
       title="API keys"
-      footer="API models are billed per token to your key, not to a subscription, and they only chat: they can’t run commands, edit files or use connectors. Keys are encrypted with Windows data protection in Nest’s data folder and never shown again."
+      footer={`API models are billed per token to your key, not to a subscription, and they only chat: they can’t run commands, edit files or use connectors. Keys are encrypted with ${KEY_PROTECTION} in Nest’s data folder and never shown again.`}
     >
       {API_PROVIDERS.map((p) => (
         <ApiKeyRow key={p} provider={p} state={keys[p]} status={state.statuses[p]} onSaved={onSaved} attempt={attempt} />
@@ -1019,7 +1191,15 @@ function MemoryContext({ info }: { info: AppInfo | null }) {
             step={1000}
             value={budget}
             onChange={(e) => setBudget(e.target.value)}
-            onBlur={() => void updateSettings({ transferBudgetChars: Number(budget) })}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            onBlur={() => {
+              // Show the value that will actually be used, and only save a real change.
+              const saved = state.settings.transferBudgetChars;
+              const n = Number(budget);
+              const next = Number.isFinite(n) && budget.trim() ? Math.min(40000, Math.max(1000, Math.round(n))) : saved;
+              setBudget(String(next));
+              if (next !== saved) void updateSettings({ transferBudgetChars: next });
+            }}
             className={cx(inputClass, 'w-28 text-right')}
           />
         </Row>
@@ -1053,10 +1233,55 @@ function DataStorage({ info }: { info: AppInfo | null }) {
         </Row>
       </Group>
       <Group title="Provider data" footer="Codex and Claude Code keep their own session histories and credentials in their own folders. Deleting a conversation in Nest doesn’t touch them.">
-        <Row label="Codex" description="%USERPROFILE%\.codex" />
-        <Row label="Claude Code" description="%USERPROFILE%\.claude" />
+        <Row label="Codex" description={`${HOME}${SEP}.codex`} />
+        <Row label="Claude Code" description={`${HOME}${SEP}.claude`} />
       </Group>
+      <Backups dataDir={info.dataDir} />
     </>
+  );
+}
+
+function Backups({ dataDir }: { dataDir: string }) {
+  const { attempt, toast } = useStore();
+  const [backups, setBackups] = useState<BackupInfo[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => void api.listBackups().then(setBackups).catch(() => setBackups([])), []);
+  const newest = backups?.at(-1);
+  return (
+    <Group
+      title="Backups"
+      footer="Nest snapshots its database once a day and before every upgrade, keeping the 10 most recent. To restore one, quit Nest, delete nest.sqlite, nest.sqlite-wal and nest.sqlite-shm in the data folder, then copy the backup in as nest.sqlite."
+    >
+      <Row label="Database snapshots" description={backups === null ? 'Checking…' : newest ? `${backups.length} saved · latest ${relativeTime(newest.createdAt)}` : 'None yet'}>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              const list = await attempt(() => api.backUpNow());
+              setBusy(false);
+              if (list) {
+                setBackups(list);
+                toast('Backed up', 'info');
+              }
+            }}
+          >
+            <Archive size={13} /> {busy ? 'Backing up…' : 'Back up now'}
+          </Button>
+          {Boolean(backups?.length) && (
+            <Button size="sm" variant="ghost" onClick={() => void attempt(() => api.openFolder(`${dataDir}${SEP}backups`))}>
+              Open
+            </Button>
+          )}
+        </div>
+      </Row>
+      {[...(backups ?? [])].reverse().map((b) => (
+        <Row key={b.name} label={<span className="font-mono text-[12px] font-normal">{b.name}</span>} description={`${new Date(b.createdAt).toLocaleString()}${b.name.includes('before-upgrade') ? ' · before an upgrade' : ''}`}>
+          <span className="text-[12.5px] tabular-nums text-muted">{formatBytes(b.bytes)}</span>
+        </Row>
+      ))}
+    </Group>
   );
 }
 

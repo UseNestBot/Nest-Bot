@@ -11,6 +11,7 @@ import type {
   ScheduleDraft,
   AgentDraft,
   AppSettings,
+  BackupInfo,
   Attachment,
   Conversation,
   ConversationDetail,
@@ -136,6 +137,10 @@ export interface NestApi {
   getAppInfo(): Promise<AppInfo>;
   getSettings(): Promise<AppSettings>;
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
+  /** Database snapshots in the data folder's backups/, oldest first. */
+  listBackups(): Promise<BackupInfo[]>;
+  /** Snapshot the database now, then list the snapshots. */
+  backUpNow(): Promise<BackupInfo[]>;
 
   // Updates (GitHub releases, installed silently by the NSIS installer)
   getUpdateState(): Promise<UpdateState>;
@@ -217,6 +222,8 @@ export const API_METHODS = [
   'getAppInfo',
   'getSettings',
   'updateSettings',
+  'listBackups',
+  'backUpNow',
   'getUpdateState',
   'checkForUpdates',
   'installUpdate',

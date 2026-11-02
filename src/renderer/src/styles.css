@@ -2,8 +2,9 @@
 
 /*
  * Palette lives in --nest-* variables so the theme can flip at runtime.
- * store.tsx sets data-theme / data-text-size / data-chat-width on <html>
- * from Settings → Appearance.
+ * store.tsx sets data-theme / data-dark-style / data-accent / data-density /
+ * data-chat-width / data-reduce-motion and --nest-zoom / --nest-font-* on
+ * <html> from Settings → Appearance.
  */
 :root {
   color-scheme: light;
@@ -92,6 +93,49 @@
   --nest-series-6: #9085e9;
 }
 
+/* Dark, true black: for OLED screens. Lines and raised surfaces stay just visible. */
+:root[data-theme='dark'][data-dark-style='black'] {
+  --nest-canvas: #000000;
+  --nest-panel: #0e0e10;
+  --nest-sidebar: #070708;
+  --nest-sunken: #0a0a0b;
+  --nest-line: #1f1f23;
+  --nest-line-strong: #2c2c31;
+  --nest-bubble: #17171a;
+  --nest-hover: #151518;
+  --nest-active: #1e1e22;
+  --nest-pre: #0a0a0b;
+}
+
+/* Accent colour: links, focus rings, selection and highlights. Blue is the default above. */
+:root[data-accent='violet'] { --nest-accent: #7c5cf0; --nest-selection: #e0d8fd; }
+:root[data-accent='green'] { --nest-accent: #1f9d63; --nest-selection: #cfeedd; }
+:root[data-accent='orange'] { --nest-accent: #e2701f; --nest-selection: #fbdfc8; }
+:root[data-accent='pink'] { --nest-accent: #d9468a; --nest-selection: #f8d3e4; }
+:root[data-accent='graphite'] { --nest-accent: #5f5f68; --nest-selection: #dcdce2; }
+:root[data-theme='dark'][data-accent='violet'] { --nest-accent: #9d85ff; --nest-selection: #3d3170; }
+:root[data-theme='dark'][data-accent='green'] { --nest-accent: #3ec27a; --nest-selection: #1d4a33; }
+:root[data-theme='dark'][data-accent='orange'] { --nest-accent: #f08a3e; --nest-selection: #5a3518; }
+:root[data-theme='dark'][data-accent='pink'] { --nest-accent: #f06ba8; --nest-selection: #5a2440; }
+:root[data-theme='dark'][data-accent='graphite'] { --nest-accent: #a8a8b2; --nest-selection: #3a3a42; }
+
+/* Density scales Tailwind's spacing unit, so padding, gaps and row heights move together. */
+:root[data-density='compact'] {
+  --spacing: 0.22rem;
+}
+:root[data-density='comfortable'] {
+  --spacing: 0.28rem;
+}
+
+:root[data-reduce-motion] *,
+:root[data-reduce-motion] *::before,
+:root[data-reduce-motion] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
 @theme inline {
   --color-canvas: var(--nest-canvas);
   --color-panel: var(--nest-panel);
@@ -130,9 +174,10 @@
 }
 
 @theme {
-  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  --font-display: 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+  /* --nest-font-ui / --nest-font-code hold the fonts chosen in Appearance, with a trailing comma. */
+  --font-sans: var(--nest-font-ui,) 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: var(--nest-font-ui,) 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: var(--nest-font-code,) 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
   --shadow-float: 0 8px 28px -10px var(--nest-shadow), 0 1px 3px rgba(0, 0, 0, 0.04);
   --shadow-pop: 0 12px 36px -8px var(--nest-shadow), 0 2px 6px rgba(0, 0, 0, 0.04);
 }
@@ -143,12 +188,9 @@ body,
   height: 100%;
 }
 
-/* Text size scales the whole UI so spacing stays proportional. */
-:root[data-text-size='small'] #root {
-  zoom: 0.92;
-}
-:root[data-text-size='large'] #root {
-  zoom: 1.1;
+/* Interface size zooms the whole UI so spacing stays proportional. */
+#root {
+  zoom: var(--nest-zoom, 1);
 }
 
 body {
@@ -176,13 +218,6 @@ body {
 
 button {
   cursor: default;
-}
-
-:root[data-text-size='small'] {
-  --nest-zoom: 0.92;
-}
-:root[data-text-size='large'] {
-  --nest-zoom: 1.1;
 }
 
 /*
@@ -638,7 +673,7 @@ button {
  * Floating layers: tooltips, popovers and dropdowns (components/layer.tsx).
  * They render into #nest-layers, a click-through sheet outside #root, so no
  * scroll container or rounded panel can clip them. That sheet sits outside the
- * text-size zoom, so each layer re-applies it to its own panel; the wrapper
+ * interface zoom, so each layer re-applies it to its own panel; the wrapper
  * keeps a content-sized width so its offsets never change how text wraps.
  */
 .nest-layer {
