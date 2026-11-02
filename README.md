@@ -223,4 +223,4 @@ Set `NEST_DEBUG_PROTOCOL=1` to log Codex protocol method names.
 
 ## License
 
-[MIT](LICENSE)
+[GPL3.0](LICENSE)
