@@ -119,22 +119,29 @@ describe('skip permissions through RunManager', () => {
     expect(a.db.listActivities(conv.id).some((x) => x.title.startsWith('Auto-approved'))).toBe(true);
   });
 
-  it('auto-approves Nest tool requests while skipping, and still asks otherwise', async () => {
+  it('auto-approves Nest tool requests while skipping, but always asks before changing agents', async () => {
     const a = boot(true);
     const conv = conversation(a.db, 'claude', true);
     await a.runs.send(conv.id, 'work [slow]', []);
-    const res = await a.tools.call(conv.id, 'create_agent', { name: 'Helper', instructions: 'Help.' });
-    expect(res.ok).toBe(true);
+    const shared = await a.tools.call(conv.id, 'remember', { note: 'Ship on Fridays', shared: true });
+    expect(shared.ok).toBe(true);
+    expect(a.db.listApprovals(conv.id)).toHaveLength(0);
+
+    // Skipping must not spread to other agents: creating one still asks.
+    const pending = a.tools.call(conv.id, 'create_agent', { name: 'Helper', instructions: 'Help.' });
+    const approval = await pendingApproval(a.db, conv.id);
+    expect(approval.title).toMatch(/create an agent/);
+    a.runs.respondApproval(approval.id, 'allow');
+    expect((await pending).ok).toBe(true);
     expect(a.db.listAgents().some((x) => x.name === 'Helper')).toBe(true);
     await a.runs.cancel(conv.id);
 
     const careful = conversation(a.db, 'claude', false);
     await a.runs.send(careful.id, 'work [slow]', []);
-    const pending = a.tools.call(careful.id, 'create_agent', { name: 'Other', instructions: 'x' });
-    for (let i = 0; i < 200 && !a.db.listApprovals(careful.id).length; i++) await new Promise((r) => setTimeout(r, 25));
-    expect(a.db.listApprovals(careful.id)[0]?.status).toBe('pending');
+    const remembered = a.tools.call(careful.id, 'remember', { note: 'x', shared: true });
+    expect((await pendingApproval(a.db, careful.id)).status).toBe('pending');
     await a.runs.cancel(careful.id);
-    expect((await pending).ok).toBe(false);
+    expect((await remembered).ok).toBe(false);
   });
 
   it('skips by default for agents with no choice of their own, but not those set to always ask', async () => {
@@ -163,16 +170,21 @@ describe('skip permissions through RunManager', () => {
     expect(reply(a.db, conv.id, r2.runId)).toBe('perms:bypassPermissions');
   });
 
-  it('update_agent sets another agent’s permissions (auto-approved when the caller skips)', async () => {
+  it('update_agent sets another agent’s permissions, asking even when the caller skips', async () => {
     const a = boot(true);
     const chief = conversation(a.db, 'claude', true);
     const target = conversation(a.db, 'codex', undefined);
     const targetAgent = a.db.getAgent(target.agentId)!;
     await a.runs.send(chief.id, 'work [slow]', []);
-    const res = await a.tools.call(chief.id, 'update_agent', { agent: targetAgent.name, skip_permissions: true, reason: 'user asked' });
+    const approved = async (args: Record<string, unknown>) => {
+      const pending = a.tools.call(chief.id, 'update_agent', args);
+      a.runs.respondApproval((await pendingApproval(a.db, chief.id)).id, 'allow');
+      return pending;
+    };
+    const res = await approved({ agent: targetAgent.name, skip_permissions: true, reason: 'user asked' });
     expect(res.ok).toBe(true);
     expect(a.db.getAgent(targetAgent.id)!.permissions.skipPermissions).toBe(true);
-    const reset = await a.tools.call(chief.id, 'update_agent', { agent: targetAgent.name, skip_permissions: 'default' });
+    const reset = await approved({ agent: targetAgent.name, skip_permissions: 'default' });
     expect(reset.ok).toBe(true);
     expect(a.db.getAgent(targetAgent.id)!.permissions.skipPermissions).toBeUndefined();
     await a.runs.cancel(chief.id);
@@ -205,3 +217,13 @@ describe('skip permissions through RunManager', () => {
     await a.runs.cancel(conv.id);
   });
 });
+
+/** The conversation's pending approval card, once it appears. */
+async function pendingApproval(db: NestDb, conversationId: string) {
+  for (let i = 0; i < 200; i++) {
+    const found = db.listApprovals(conversationId).find((x) => x.status === 'pending');
+    if (found) return found;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error('No pending approval appeared');
+}

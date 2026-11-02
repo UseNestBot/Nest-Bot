@@ -1,6 +1,6 @@
 // The ACP adapter (Cursor, Gemini CLI, Grok CLI) against a fake ACP agent, and the
 // API-key adapter against a fake HTTP stream. No real provider is contacted.
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import { AcpProvider, acpPermissionChoices, pickMode, type AcpDefinition } from 
 import { API_DEFINITIONS, ApiProvider, SseParser, trimHistory } from '../src/main/providers/api';
 import { ApiKeyStore, type SecretCipher } from '../src/main/apiKeys';
 import { buildChildEnv } from '../src/main/providers/process';
+import { ClaudeProvider } from '../src/main/providers/claude';
 import { RunManager, type ProviderRegistry } from '../src/main/runs';
 import type { ProviderEvent } from '../src/main/providers/types';
 
@@ -314,4 +315,40 @@ describe('API key providers', () => {
     expect(trimmed).toHaveLength(2);
     expect(trimmed[0].role).toBe('user');
   });
+});
+
+describe('Claude turn lifecycle', () => {
+  const input = (connectors: Promise<never> | null = null) => ({
+    runId: 'r', sessionId: null, cwd: null, model: null, effort: null, instructions: '', prompt: 'hi', attachments: [],
+    permissions: { claudeMode: 'default' as const, codexSandbox: 'workspace-write' as const, codexApproval: 'on-request' as const, skipped: false },
+    connectors,
+  });
+
+  it('does not start Claude Code when stopped before it launched', async () => {
+    const claude = new ClaudeProvider(() => ({ ...DEFAULT_SETTINGS, claudePath: path.resolve('tests/fixtures/fake-claude.mjs') }), () => {});
+    cleanups.push(() => claude.dispose());
+    await claude.detect();
+    let release!: () => void;
+    const connectors = new Promise<never>((r) => (release = () => r(null as never)));
+    const events: ProviderEvent[] = [];
+    const turn = claude.startTurn(input(connectors), (e) => events.push(e));
+    await turn.cancel();
+    release();
+    await turn.done;
+    await new Promise((r) => setTimeout(r, 1500)); // a spawned CLI would have replied by now
+    expect(events.filter((e) => e.type !== 'session')).toEqual([{ type: 'completed', status: 'interrupted', error: undefined }]);
+  });
+
+  it('fails the turn when Claude Code cannot be started', async () => {
+    if (process.platform === 'win32') return; // no exec bit on Windows
+    const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'nest-claude-')), 'claude');
+    writeFileSync(file, '#!/bin/sh\n');
+    chmodSync(file, 0o644);
+    const claude = new ClaudeProvider(() => ({ ...DEFAULT_SETTINGS, claudePath: file }), () => {});
+    cleanups.push(() => claude.dispose());
+    const events: ProviderEvent[] = [];
+    const turn = claude.startTurn(input(), (e) => events.push(e));
+    await turn.done;
+    expect(events.at(-1)).toMatchObject({ type: 'completed', status: 'failed' });
+  }, 10_000);
 });

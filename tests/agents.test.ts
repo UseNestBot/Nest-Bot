@@ -142,12 +142,23 @@ describe('Nest tools', () => {
     agent(a.db, 'Engineer', 'codex');
     const conv = a.db.createConversation(me);
     expect((await a.tools.call(conv.id, 'list_agents', {})).text).toContain('Engineer');
-    const res = await a.tools.call(conv.id, 'delegate', { agent: 'engineer', task: 'build it', context: 'ctx' });
+    await a.runs.send(conv.id, 'work [slow]', []); // tools are called during a run
+    const pending = a.tools.call(conv.id, 'delegate', { agent: 'engineer', task: 'build it', context: 'ctx' });
+    const approval = await until(() => a.db.listApprovals(conv.id).find((x) => x.status === 'pending'));
+    expect(approval.title).toMatch(/delegate to Engineer/);
+    a.runs.respondApproval(approval.id, 'allow');
+    const res = await pending;
     expect(res.ok).toBe(true);
     expect(res.text).toContain('Engineer finished');
     expect(res.text).toContain('Hello there');
     expect((await a.tools.call(conv.id, 'delegate', { agent: 'Chief of Staff', task: 'x' })).text).toMatch(/yourself/);
     expect((await a.tools.call(conv.id, 'delegate', { agent: 'Nobody', task: 'x' })).ok).toBe(false);
+
+    const declined = a.tools.call(conv.id, 'delegate', { agent: 'engineer', task: 'again' });
+    const ap2 = await until(() => a.db.listApprovals(conv.id).find((x) => x.status === 'pending'));
+    a.runs.respondApproval(ap2.id, 'deny');
+    expect((await declined).ok).toBe(false);
+    await a.runs.cancel(conv.id);
   });
 
   it('asks the user before creating an agent, and respects a decline', async () => {
