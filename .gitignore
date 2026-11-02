@@ -1,0 +1,44 @@
+# Dependencies and build output
+node_modules/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local config and secrets: never commit these
+nest.config.json
+api-keys.json
+api-keys.json.tmp
+/api-sessions/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# App data: databases, backups, voice models and test profiles
+# (Nest keeps real data in %APPDATA%\Nest; these catch copies made inside the repo)
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+/backups/
+/models/
+/profile*/
+*.onnx
+*.wav
+
+# Logs, editor and OS clutter
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Local Claude Code settings, memory and worktrees
+.claude/
+CLAUDE.local.md

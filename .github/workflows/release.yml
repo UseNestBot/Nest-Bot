@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            patterns: |
+              dist/*.exe
+              dist/*.exe.blockmap
+              dist/latest.yml
+          - os: ubuntu-latest
+            platform: linux
+            patterns: |
+              dist/*.AppImage
+              dist/*.deb
+              dist/latest-linux.yml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # Full history: the build number in "v0.1.0:123" is the commit count.
+          fetch-depth: 0
+
+      # Tags with a prerelease suffix (v0.2.0-beta.1, v0.2.0-nightly.20261101) are
+      # beta builds: galaxy banner, and they update to prereleases too.
+      - name: Stamp build number and channel
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          echo "NEST_BUILD=$(git rev-list --count HEAD)" >> "$GITHUB_ENV"
+          if [[ "$TAG" == *-* ]]; then echo "NEST_CHANNEL=beta" >> "$GITHUB_ENV"; else echo "NEST_CHANNEL=stable" >> "$GITHUB_ENV"; fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      # electron-builder shells out to fakeroot/dpkg-deb to stage the .deb.
+      - name: Install Linux packaging tools
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fakeroot
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # Build before testing: tests/agents.test.ts only exercises the MCP
+      # server <-> bridge path when out/main/nest-mcp.mjs exists.
+      - name: Build app bundles
+        run: npx electron-vite build
+
+      - run: npm test
+
+      # The in-app updater reads version and build from the installer's name (src/main/updateFeed.ts).
+      - name: Package installers
+        shell: bash
+        run: npx electron-builder --${{ matrix.platform }} --publish never '-c.nsis.artifactName=Nest-Setup-${version}-b${env.NEST_BUILD}.${ext}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nest-${{ matrix.platform }}
+          path: ${{ matrix.patterns }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes="$(ls ".github/release-notes/${TAG}.md" 2>/dev/null || true)"
+          if [ -n "$notes" ]; then
+            notes_arg=(--notes-file "$notes")
+          else
+            notes_arg=(--generate-notes)
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "Nest ${TAG}" \
+              "${notes_arg[@]}" \
+              artifacts/*
+          fi

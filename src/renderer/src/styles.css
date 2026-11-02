@@ -1,0 +1,801 @@
+@import 'tailwindcss';
+
+/*
+ * Palette lives in --nest-* variables so the theme can flip at runtime.
+ * store.tsx sets data-theme / data-text-size / data-chat-width on <html>
+ * from Settings → Appearance.
+ */
+:root {
+  color-scheme: light;
+  --nest-canvas: #ffffff;
+  --nest-panel: #ffffff;
+  --nest-sidebar: #f7f7f8;
+  --nest-sunken: #f5f5f7;
+  --nest-ink: #111113;
+  --nest-ink-2: #3c3c43;
+  --nest-muted: #6e6e76;
+  --nest-faint: #a2a2aa;
+  --nest-line: #ececee;
+  --nest-line-strong: #dcdce0;
+  --nest-bubble: #f1f1f3;
+  --nest-hover: #f2f2f4;
+  --nest-active: #e8e8eb;
+  --nest-user: #0f0f10;
+  --nest-on-user: #ffffff;
+  --nest-primary: #111113;
+  --nest-primary-hover: #2c2c30;
+  --nest-on-primary: #ffffff;
+  --nest-accent: #3b82f6;
+  --nest-ok: #2fb36b;
+  --nest-warn: #c58a2a;
+  --nest-bad: #d4483d;
+  --nest-warn-bg: #fdf8ee;
+  --nest-warn-line: #ecdcb5;
+  --nest-warn-ink: #8a6420;
+  --nest-bad-bg: #fcf1f0;
+  --nest-bad-line: #f0d2ce;
+  --nest-bad-ink: #8f3a31;
+  --nest-code: rgba(0, 0, 0, 0.055);
+  --nest-pre: #fafafa;
+  --nest-overlay: rgba(18, 18, 22, 0.28);
+  --nest-shadow: rgba(16, 16, 24, 0.1);
+  --nest-selection: #cfe0fb;
+  /* Chart series, in fixed order (validated for colour-blind separation between neighbours). */
+  --nest-series-1: #2a78d6;
+  --nest-series-2: #eb6834;
+  --nest-series-3: #1baf7a;
+  --nest-series-4: #eda100;
+  --nest-series-5: #e87ba4;
+  --nest-series-6: #6250d6;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --nest-canvas: #161618;
+  --nest-panel: #1f1f22;
+  --nest-sidebar: #1c1c1f;
+  --nest-sunken: #1b1b1e;
+  --nest-ink: #f2f2f4;
+  --nest-ink-2: #c9c9ce;
+  --nest-muted: #9a9aa2;
+  --nest-faint: #6c6c74;
+  --nest-line: #2a2a2e;
+  --nest-line-strong: #3a3a40;
+  --nest-bubble: #26262a;
+  --nest-hover: #242428;
+  --nest-active: #2d2d32;
+  --nest-user: #f2f2f4;
+  --nest-on-user: #111113;
+  --nest-primary: #f2f2f4;
+  --nest-primary-hover: #dcdce0;
+  --nest-on-primary: #111113;
+  --nest-accent: #5b9bff;
+  --nest-ok: #3ec27a;
+  --nest-warn: #d9a54a;
+  --nest-bad: #ef6b5f;
+  --nest-warn-bg: #2a2416;
+  --nest-warn-line: #4a3d1f;
+  --nest-warn-ink: #e8c27a;
+  --nest-bad-bg: #2c1a19;
+  --nest-bad-line: #4d2a27;
+  --nest-bad-ink: #f3a49b;
+  --nest-code: rgba(255, 255, 255, 0.08);
+  --nest-pre: #18181b;
+  --nest-overlay: rgba(0, 0, 0, 0.5);
+  --nest-shadow: rgba(0, 0, 0, 0.45);
+  --nest-selection: #2c4a7a;
+  --nest-series-1: #3987e5;
+  --nest-series-2: #d95926;
+  --nest-series-3: #199e70;
+  --nest-series-4: #c98500;
+  --nest-series-5: #d55181;
+  --nest-series-6: #9085e9;
+}
+
+@theme inline {
+  --color-canvas: var(--nest-canvas);
+  --color-panel: var(--nest-panel);
+  --color-sidebar: var(--nest-sidebar);
+  --color-sunken: var(--nest-sunken);
+  --color-ink: var(--nest-ink);
+  --color-ink-2: var(--nest-ink-2);
+  --color-muted: var(--nest-muted);
+  --color-faint: var(--nest-faint);
+  --color-line: var(--nest-line);
+  --color-line-strong: var(--nest-line-strong);
+  --color-bubble: var(--nest-bubble);
+  --color-hover: var(--nest-hover);
+  --color-active: var(--nest-active);
+  --color-user: var(--nest-user);
+  --color-on-user: var(--nest-on-user);
+  --color-primary: var(--nest-primary);
+  --color-primary-hover: var(--nest-primary-hover);
+  --color-on-primary: var(--nest-on-primary);
+  --color-accent: var(--nest-accent);
+  --color-ok: var(--nest-ok);
+  --color-warn: var(--nest-warn);
+  --color-bad: var(--nest-bad);
+  --color-warn-bg: var(--nest-warn-bg);
+  --color-warn-line: var(--nest-warn-line);
+  --color-warn-ink: var(--nest-warn-ink);
+  --color-bad-bg: var(--nest-bad-bg);
+  --color-bad-line: var(--nest-bad-line);
+  --color-bad-ink: var(--nest-bad-ink);
+  --color-focus: var(--nest-accent);
+  --color-overlay: var(--nest-overlay);
+  /* Pre-revamp names, still used by screens that haven't moved to the new tokens. */
+  --color-side-line: var(--nest-line);
+  --color-side-hover: var(--nest-hover);
+  --color-side-active: var(--nest-active);
+}
+
+@theme {
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-display: 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+  --shadow-float: 0 8px 28px -10px var(--nest-shadow), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-pop: 0 12px 36px -8px var(--nest-shadow), 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Text size scales the whole UI so spacing stays proportional. */
+:root[data-text-size='small'] #root {
+  zoom: 0.92;
+}
+:root[data-text-size='large'] #root {
+  zoom: 1.1;
+}
+
+body {
+  margin: 0;
+  background: var(--nest-canvas);
+  color: var(--nest-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--nest-selection);
+}
+
+/* In the base layer so component utilities like outline-none can override it. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--nest-accent);
+    outline-offset: 1px;
+  }
+}
+
+button {
+  cursor: default;
+}
+
+:root[data-text-size='small'] {
+  --nest-zoom: 0.92;
+}
+:root[data-text-size='large'] {
+  --nest-zoom: 1.1;
+}
+
+/*
+ * The native title bar is hidden (main/index.ts): page headers are the window's
+ * drag handle, and the header touching the window's right edge ends in a spacer
+ * as wide as Windows' caption buttons (0 when there's no overlay).
+ */
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-drag :is(button, input, textarea, select, a, label, [role='button']) {
+  -webkit-app-region: no-drag;
+}
+.titlebar-spacer {
+  flex-shrink: 0;
+  width: calc((100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)) / var(--nest-zoom, 1));
+}
+
+/* The web app on a phone (src/renderer/src/web). */
+:root[data-remote] {
+  /* The visible height, which shrinks as the on-screen keyboard opens. */
+  height: 100dvh;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+:root[data-remote] body,
+:root[data-remote] #root {
+  height: 100dvh;
+}
+@media (max-width: 640px) {
+  /* iOS zooms the page into any field under 16px when it's focused. */
+  :root[data-remote] :is(input, textarea, select) {
+    font-size: 16px !important;
+  }
+}
+
+/* Transcript and composer share one column width (Settings → Appearance). */
+.chat-column {
+  width: 100%;
+  max-width: var(--chat-width, 760px);
+  margin-inline: auto;
+}
+
+/* Thin, quiet scrollbars */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--nest-ink) 16%, transparent) transparent;
+}
+
+/* Rendered markdown */
+.md {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--nest-ink);
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote,
+.md table {
+  margin: 0 0 0.75em;
+}
+.md ul,
+.md ol {
+  padding-left: 1.35em;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.2em 0;
+}
+.md li::marker {
+  color: var(--nest-faint);
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.1em 0 0.45em;
+}
+.md h1 {
+  font-size: 1.2em;
+}
+.md h2 {
+  font-size: 1.1em;
+}
+.md h3,
+.md h4 {
+  font-size: 1em;
+}
+.md a {
+  color: var(--nest-accent);
+  text-decoration: none;
+}
+.md a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--nest-code);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+.md pre {
+  background: var(--nest-pre);
+  border: 1px solid var(--nest-line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.md blockquote {
+  border-left: 3px solid var(--nest-line-strong);
+  padding-left: 0.9em;
+  color: var(--nest-ink-2);
+}
+.md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  border: 1px solid var(--nest-line-strong);
+  padding: 5px 9px;
+  text-align: left;
+}
+.md th {
+  background: var(--nest-code);
+  font-weight: 600;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--nest-line-strong);
+  margin: 1.1em 0;
+}
+
+/* Chart cards drawn from ```chart blocks */
+.chart-card {
+  width: 560px;
+  max-width: 100%;
+  margin: 0.25em 0 0.75em;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--nest-line);
+  border-radius: 16px;
+  background: var(--nest-panel);
+}
+.chart-card .chart-tick,
+.chart-card .chart-marker {
+  font-size: 10.5px;
+  fill: var(--nest-muted);
+  font-variant-numeric: tabular-nums;
+  /* A surface halo keeps labels legible where a line runs through them. */
+  stroke: var(--nest-panel);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  paint-order: stroke;
+}
+.chart-card .chart-marker {
+  font-weight: 600;
+  fill: var(--nest-ink-2);
+}
+.chart-card .chart-donut-value {
+  font-size: 17px;
+  font-weight: 600;
+  fill: var(--nest-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inside a user bubble the palette is inverted. */
+.md-on-user a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.caret::after {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--nest-faint);
+  vertical-align: middle;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+/* Three-dot "typing" indicator shown while an agent works before any text arrives. */
+.typing {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  height: 22px;
+}
+.typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--nest-faint);
+  animation: typing 1.2s ease-in-out infinite;
+}
+.typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.panel-in {
+  animation: panel-in 0.18s ease-out;
+}
+
+/* Dictation: the recording dot breathes while the microphone is on. */
+.rec-dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* Dictation pill (DictationPill.tsx): live level bars, fading out toward the oldest. */
+.flow-bars {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 35%);
+  mask-image: linear-gradient(to right, transparent, #000 35%);
+}
+.flow-bars span {
+  width: 3px;
+  height: 100%;
+  flex: none;
+  border-radius: 2px;
+  background: currentColor;
+  transform: scaleY(0.14);
+  transition: transform 90ms linear;
+}
+
+/* While transcribing, a slow wave runs through a few bars. */
+.flow-wave span {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.85;
+  transform: scaleY(0.3);
+  animation: flow-wave 1s ease-in-out infinite;
+}
+
+@keyframes flow-wave {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes flow-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.flow-pop {
+  animation: flow-pop 0.16s ease-out;
+}
+
+/*
+ * Avatar life (Avatar.tsx). Transforms are in the SVG's 100-unit grid, so they
+ * scale with the avatar. Bodies squash from their feet; eyes from their middle.
+ * One-shot reactions (.av-react) are played from Avatar.tsx.
+ */
+.av-bob,
+.av-react {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+.av-glance,
+.av-blink {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+/* Idle: a blink every few seconds, each avatar on its own rhythm. */
+.av-blink {
+  animation: av-blink var(--blink-dur, 6s) var(--blink-delay, 0s) infinite;
+}
+@keyframes av-blink {
+  0%,
+  95%,
+  100% {
+    transform: none;
+  }
+  97% {
+    transform: scaleY(0.1);
+  }
+}
+
+/* Working: a gentle breathing bob, eyes reading back and forth. */
+.av-bob {
+  animation: av-bob 1.8s ease-in-out infinite;
+}
+@keyframes av-bob {
+  0%,
+  100% {
+    transform: none;
+  }
+  50% {
+    transform: translateY(-3px) scale(0.985, 1.015);
+  }
+}
+.av-glance {
+  animation: av-glance 3.6s ease-in-out infinite;
+}
+@keyframes av-glance {
+  0%,
+  12%,
+  100% {
+    transform: none;
+  }
+  24%,
+  48% {
+    transform: translate(-4px, 1px);
+  }
+  60%,
+  86% {
+    transform: translate(3px, -1px);
+  }
+}
+
+/* Sidebar: small typing dots on a row while its chat runs; attention dots pop in. */
+.typing-sm {
+  height: 8px;
+  gap: 2.5px;
+}
+.typing-sm span {
+  width: 4px;
+  height: 4px;
+}
+.dot-pop {
+  animation: dot-pop 0.28s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+@keyframes dot-pop {
+  from {
+    transform: scale(0);
+  }
+}
+.fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Poked avatar (Avatar.tsx): a little heart floats up. */
+@keyframes avatar-heart {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.4);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(0) scale(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-22px) scale(0.9);
+  }
+}
+.avatar-heart {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: avatar-heart 0.9s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-heart,
+  .caret::after,
+  .typing span,
+  .panel-in,
+  .rec-dot,
+  .flow-wave span,
+  .flow-pop,
+  .av-blink,
+  .av-bob,
+  .av-glance,
+  .dot-pop,
+  .fade-in {
+    animation: none;
+  }
+  .flow-bars span {
+    transition: none;
+  }
+}
+
+/*
+ * Floating layers: tooltips, popovers and dropdowns (components/layer.tsx).
+ * They render into #nest-layers, a click-through sheet outside #root, so no
+ * scroll container or rounded panel can clip them. That sheet sits outside the
+ * text-size zoom, so each layer re-applies it to its own panel; the wrapper
+ * keeps a content-sized width so its offsets never change how text wraps.
+ */
+.nest-layer {
+  position: absolute;
+  width: max-content;
+  pointer-events: auto;
+}
+.nest-layer > * {
+  zoom: var(--nest-zoom, 1);
+}
+
+/* Layers rise from the side they are anchored to. */
+.layer-pop {
+  animation: layer-down 0.13s ease-out;
+}
+[data-side='top'] > .layer-pop {
+  animation-name: layer-up;
+}
+[data-side='left'] > .layer-pop {
+  animation-name: layer-left;
+}
+[data-side='right'] > .layer-pop {
+  animation-name: layer-right;
+}
+
+@keyframes layer-down {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes layer-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes layer-left {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+}
+@keyframes layer-right {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .layer-pop {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Beta builds: a night-sky banner behind the sidebar header (Sidebar.tsx). */
+.galaxy-banner {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  color: #fff;
+  background:
+    radial-gradient(ellipse 55% 130% at 88% 135%, rgba(129, 76, 255, 0.55), transparent 62%),
+    radial-gradient(ellipse 45% 110% at 12% 140%, rgba(56, 120, 255, 0.42), transparent 60%),
+    radial-gradient(ellipse 35% 90% at 52% 150%, rgba(236, 92, 190, 0.22), transparent 60%),
+    radial-gradient(ellipse 70% 80% at 40% -40%, rgba(70, 60, 170, 0.35), transparent 70%),
+    linear-gradient(180deg, #090a1c 0%, #121235 55%, #1b1748 100%);
+}
+.galaxy-banner::before,
+.galaxy-banner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-repeat: repeat;
+}
+/* Two star fields at different sizes, twinkling out of step. */
+.galaxy-banner::before {
+  background-image:
+    radial-gradient(1px 1px at 14px 9px, rgba(255, 255, 255, 0.9), transparent),
+    radial-gradient(1px 1px at 61px 37px, rgba(255, 255, 255, 0.75), transparent),
+    radial-gradient(1px 1px at 103px 18px, rgba(255, 255, 255, 0.85), transparent),
+    radial-gradient(1px 1px at 142px 44px, rgba(255, 255, 255, 0.6), transparent),
+    radial-gradient(1px 1px at 178px 12px, rgba(255, 255, 255, 0.8), transparent),
+    radial-gradient(1px 1px at 37px 48px, rgba(200, 210, 255, 0.7), transparent),
+    radial-gradient(1px 1px at 121px 29px, rgba(220, 200, 255, 0.7), transparent);
+  background-size: 196px 56px;
+  animation: galaxy-twinkle 4.6s ease-in-out infinite;
+}
+.galaxy-banner::after {
+  background-image:
+    radial-gradient(1.5px 1.5px at 44px 21px, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 167px 31px, rgba(235, 225, 255, 0.95), transparent),
+    radial-gradient(1px 1px at 228px 8px, #fff, transparent),
+    radial-gradient(1.5px 1.5px at 262px 46px, rgba(205, 225, 255, 0.9), transparent);
+  background-size: 288px 56px;
+  animation: galaxy-twinkle 6.2s ease-in-out -2.4s infinite;
+}
+.galaxy-banner .font-display {
+  text-shadow: 0 0 14px rgba(168, 140, 255, 0.55);
+}
+.galaxy-chip {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 0 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 17px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(4px);
+}
+@keyframes galaxy-twinkle {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .galaxy-banner::before,
+  .galaxy-banner::after {
+    animation: none;
+  }
+}
+
+/* Confirm dialog (components/confirm.tsx). */
+.confirm-overlay {
+  animation: fade-in 0.14s ease-out;
+}
+.confirm-card {
+  animation: confirm-in 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.confirm-overlay.is-leaving {
+  opacity: 0;
+  transition: opacity 0.11s ease-in;
+}
+.confirm-overlay.is-leaving .confirm-card {
+  transform: scale(0.97);
+  transition: transform 0.11s ease-in;
+}
+@keyframes confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .confirm-overlay,
+  .confirm-card {
+    animation: none;
+  }
+}

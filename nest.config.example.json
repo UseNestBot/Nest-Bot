@@ -1,0 +1,10 @@
+{
+  "defaultWorkspace": null,
+  "claudePath": null,
+  "codexPath": null,
+  "cursorPath": null,
+  "geminiPath": null,
+  "grokPath": null,
+  "allowApiKeyBilling": false,
+  "transferBudgetChars": 8000
+}
