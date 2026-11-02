@@ -49,6 +49,13 @@ describe('updater release feed', () => {
     expect(pickUpdate(feed, { version: '0.1.0', build: 15 }, 'beta')?.release.tag).toBe('v0.1.1-beta.1');
   });
 
+  it('nightlies reach beta builds but not stable ones', () => {
+    // nightly.yml doesn't bump package.json, so the installer carries the plain version.
+    const nightly = [release('v0.1.0-nightly.20261102.25', 'Nest-Setup-0.1.0-b25.exe'), release('v0.1.0', 'Nest-Setup-0.1.0-b20.exe')];
+    expect(pickUpdate(nightly, { version: '0.1.0', build: 20 }, 'stable')).toBeNull();
+    expect(pickUpdate(nightly, { version: '0.1.0', build: 20 }, 'beta')?.release.tag).toBe('v0.1.0-nightly.20261102.25');
+  });
+
   it('offers nothing when already current', () => {
     expect(pickUpdate(feed, { version: '0.1.0', build: 20 }, 'stable')).toBeNull();
   });
