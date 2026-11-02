@@ -1245,18 +1245,21 @@ function RemoteAccess() {
                 </Button>
               </Row>
             ) : (
-              <Row label="Open this on your phone" description="In Safari or Chrome, with Tailscale on. Then add it to your Home Screen.">
-                <div className="flex items-center gap-1.5">
-                  <span className="max-w-[260px] truncate rounded-md bg-sunken px-2 py-1 font-mono text-[12px] text-ink-2">{ts.url}</span>
-                  <Tooltip label="Copy">
-                    <button
-                      onClick={() => void navigator.clipboard.writeText(ts.url ?? '').then(() => toast('Copied', 'info'))}
-                      aria-label="Copy address"
-                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-ink"
-                    >
-                      <Copy size={14} />
-                    </button>
-                  </Tooltip>
+              <Row stacked label="Open this on your phone" description="In Safari or Chrome, with Tailscale on. Then add it to your Home Screen.">
+                <div className="flex items-center gap-2">
+                  {/* The whole address, selectable with one click, in case copying is blocked. */}
+                  <span className="min-w-0 flex-1 select-all break-all rounded-md bg-sunken px-2.5 py-1.5 font-mono text-[12.5px] text-ink">{ts.url}</span>
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      void navigator.clipboard.writeText(ts.url ?? '').then(
+                        () => toast('Address copied', 'info'),
+                        () => toast('Couldn’t copy. Select the address and press Ctrl+C.'),
+                      )
+                    }
+                  >
+                    <Copy size={13} /> Copy
+                  </Button>
                 </div>
               </Row>
             )}

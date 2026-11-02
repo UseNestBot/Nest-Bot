@@ -135,10 +135,13 @@ function createWindow(): void {
     const current = mainWindow?.webContents.getURL();
     if (url !== current) event.preventDefault();
   });
-  // Microphone only, for dictation in our own window; camera and everything else stay denied.
+  // Our own window gets the microphone (dictation) and clipboard writes (copy buttons); camera and everything else stay denied.
   mainWindow.webContents.session.setPermissionRequestHandler((wc, perm, callback, details) => {
+    if (wc !== mainWindow?.webContents) return callback(false);
+    // Electron asks for navigator.clipboard.writeText as 'clipboard-read'. Only Nest's own code runs here (CSP 'self').
+    if (perm === 'clipboard-sanitized-write' || perm === 'clipboard-read') return callback(true);
     const types = (details as Electron.MediaAccessPermissionRequest).mediaTypes ?? [];
-    callback(perm === 'media' && wc === mainWindow?.webContents && types.length > 0 && types.every((t) => t === 'audio'));
+    callback(perm === 'media' && types.length > 0 && types.every((t) => t === 'audio'));
   });
 
   if (process.env.ELECTRON_RENDERER_URL) void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
