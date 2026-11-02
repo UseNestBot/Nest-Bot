@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowDown, ArrowLeftToLine, ArrowRightToLine, BookmarkPlus, Check, Copy, CornerDownRight, ExternalLink, FileText, GripVertical, Image as ImageIcon, Info, MoreHorizontal, PanelRight, Send, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowLeftToLine, ArrowRightToLine, BookmarkPlus, Check, Copy, CornerDownRight, ExternalLink, FileText, GripVertical, Image as ImageIcon, Info, MoreHorizontal, PanelRight, Send, SquareTerminal, Trash2, X } from 'lucide-react';
 import type { Agent, Attachment, ConversationDetail, Message, Run } from '@shared/types';
 import { PROVIDER_LABEL } from '@shared/types';
-import { api } from '../api';
+import { api, IS_REMOTE } from '../api';
 import { useStore } from '../store';
 import { compactNumber, duration, stampTime, statusLabel } from '../format';
 import { ActivityGroup, ApprovalCard } from './Activity';
@@ -11,6 +11,7 @@ import { BrowserViewport } from './BrowserViewport';
 import { Composer } from './Composer';
 import { DetailsPanel } from './DetailsPanel';
 import { Markdown } from './Markdown';
+import { TerminalPanel, useTerminalPanel } from './TerminalPanel';
 import { Button, Field, IconButton, MenuItem, Modal, Popover, Segmented, Tooltip, cx, inputClass } from './ui';
 import { confirmDialog } from './confirm';
 import { MobileBack, useMediaQuery } from './MobileBack';
@@ -72,12 +73,14 @@ export function ConversationView({ detail, pane = SOLO }: { detail: Conversation
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [remember, setRemember] = useState<Message | null>(null);
   const [detailsOpen, setDetailsOpen, detailsFloat] = useDetailsOpen(conversation.id, pane.split);
+  const [terminalOpen, setTerminalOpen] = useTerminalPanel(conversation.id);
 
   return (
     <div className="relative flex h-full min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <ConversationHeader detail={detail} agent={agent} pane={pane} onHandoff={() => setHandoffOpen(true)} detailsOpen={detailsOpen} detailsFloat={detailsFloat} onToggleDetails={() => setDetailsOpen(!detailsOpen)} />
+        <ConversationHeader detail={detail} agent={agent} pane={pane} onHandoff={() => setHandoffOpen(true)} detailsOpen={detailsOpen} detailsFloat={detailsFloat} onToggleDetails={() => setDetailsOpen(!detailsOpen)} terminalOpen={terminalOpen} onToggleTerminal={() => setTerminalOpen(!terminalOpen)} />
         <Transcript detail={detail} agent={agent} onRemember={setRemember} />
+        {terminalOpen && <TerminalPanel conversationId={conversation.id} onClose={() => setTerminalOpen(false)} />}
         <Composer conversation={conversation} running={running} active={pane.focused} disabledReason={disabledReason} placeholder={`Message ${agent?.name ?? 'agent'}`} />
       </div>
       {detailsOpen && agent && <DetailsPanel agent={agent} conversation={conversation} floating={detailsFloat} titlebar={pane.last} onClose={() => setDetailsOpen(false)} />}
@@ -95,6 +98,8 @@ function ConversationHeader({
   detailsOpen,
   detailsFloat,
   onToggleDetails,
+  terminalOpen,
+  onToggleTerminal,
 }: {
   detail: ConversationDetail;
   agent: Agent | null;
@@ -104,6 +109,8 @@ function ConversationHeader({
   /** The details panel floats over the chat rather than taking the header's right edge. */
   detailsFloat: boolean;
   onToggleDetails: () => void;
+  terminalOpen: boolean;
+  onToggleTerminal: () => void;
 }) {
   const { state, attempt, navigate, removeConversation, closePane, movePane } = useStore();
   const { conversation } = detail;
@@ -180,6 +187,11 @@ function ConversationHeader({
       <IconButton label="Hand a task to another agent" onClick={onHandoff}>
         <Send size={16} strokeWidth={1.8} />
       </IconButton>
+      {!IS_REMOTE && (
+        <IconButton label={terminalOpen ? 'Hide terminal' : 'Show terminal'} tip={terminalOpen ? 'Hide terminal' : 'Terminal (shared with the agent)'} onClick={onToggleTerminal} className={cx(terminalOpen && 'bg-hover text-ink')} aria-pressed={terminalOpen}>
+          <SquareTerminal size={16} strokeWidth={1.8} />
+        </IconButton>
+      )}
       <IconButton label={detailsOpen ? 'Hide details' : 'Show details'} onClick={onToggleDetails} className={cx(detailsOpen && 'bg-hover text-ink')} aria-pressed={detailsOpen}>
         <PanelRight size={17} strokeWidth={1.8} />
       </IconButton>

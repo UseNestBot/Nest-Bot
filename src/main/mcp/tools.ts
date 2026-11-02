@@ -29,6 +29,12 @@ export interface BrowserTools {
   screenshot(agentId: string): Promise<{ data: string; mimeType: string } | null>;
 }
 
+/** The conversation's shared terminal, as the tools see it (implemented by TerminalHost). */
+export interface TerminalTools {
+  run(conversationId: string, command: string, timeoutMs: number, who: string): Promise<{ text: string; ok: boolean }>;
+  read(conversationId: string, lines: number): string;
+  sendKeys(conversationId: string, keys: string): string;
+}
 
 const MAX_DELEGATION_DEPTH = 3;
 const DELEGATE_WAIT_MS = 25 * 60_000;
@@ -192,6 +198,31 @@ export const BROWSER_TOOL_DEFS: ToolDef[] = [
   },
 ];
 
+export const TERMINAL_TOOL_DEFS: ToolDef[] = [
+  {
+    name: 'terminal_run',
+    description:
+      'Run a shell command in the terminal you share with the user (shown live in Nest; the user can type into it too). It starts in this chat’s working folder and keeps its state (cd, env vars, running servers) between calls. Waits for the command to finish and returns its output and exit code. Use it when the user should see the work, or for long-running processes they may want to watch or take over.',
+    inputSchema: obj(
+      {
+        command: { type: 'string', description: 'The command (bash on macOS/Linux, PowerShell on Windows). Several lines run as one script.' },
+        timeout_seconds: { type: 'integer', description: 'How long to wait before returning (default 60, max 600). The command keeps running in the terminal after a timeout.' },
+      },
+      ['command'],
+    ),
+  },
+  {
+    name: 'terminal_read',
+    description: 'Read the shared terminal’s recent output (including anything the user typed or ran) and whether a command is still running.',
+    inputSchema: obj({ lines: { type: 'integer', description: 'How many recent lines (default 100).' } }),
+  },
+  {
+    name: 'terminal_send_keys',
+    description: 'Send raw keystrokes to the shared terminal, for interactive programs: answers to prompts ("y\n"), Ctrl-C ("\u0003") to stop a command, arrows as escape codes.',
+    inputSchema: obj({ keys: { type: 'string' } }, ['keys']),
+  },
+];
+
 /** Implements the Nest tools for one calling conversation. */
 export class NestTools {
   constructor(
@@ -201,13 +232,49 @@ export class NestTools {
     private readonly onAgentsChanged: () => void,
     /** The built-in browser and who may use it; absent in tests and when unavailable. */
     private readonly browser?: { host: BrowserTools; enabledFor: (agentId: string) => boolean },
+    /** The shared terminal; absent in tests. */
+    private readonly terminal?: TerminalTools,
   ) {}
 
   /** Tools this conversation's agent may see: browser tools only when its Browser is set to the Nest browser. */
   listFor(conversationId: string): ToolDef[] {
     const agentId = this.db.getConversation(conversationId)?.agentId;
     const browser = Boolean(agentId && this.browser?.enabledFor(agentId));
-    return browser ? [...TOOL_DEFS, ...BROWSER_TOOL_DEFS] : TOOL_DEFS;
+    return [...TOOL_DEFS, ...(browser ? BROWSER_TOOL_DEFS : []), ...(this.terminal ? TERMINAL_TOOL_DEFS : [])];
+  }
+
+  private async terminalCall(conversationId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const term = this.terminal;
+    if (!term) return { ok: false, text: 'The terminal is not available.' };
+    // The terminal runs outside the provider's own sandbox, so commands and keystrokes ask first unless permissions are skipped.
+    const confirm = async (title: string, action: string) =>
+      (await this.runs.requestLocalApproval(conversationId, { title, action, target: null, reason: null, detail: null, approveLabel: 'Run' })) === 'allow';
+    try {
+      switch (name) {
+        case 'terminal_run': {
+          const command = typeof args.command === 'string' ? args.command.slice(0, 20000) : '';
+          if (!command.trim()) return { ok: false, text: 'command is required.' };
+          const secs = Number.isFinite(Number(args.timeout_seconds)) ? Math.min(Math.max(Number(args.timeout_seconds), 1), 600) : 60;
+          if (!(await confirm(`${agentName} wants to run a command in the terminal`, command))) return { ok: false, text: 'The user declined this command.' };
+          return await term.run(conversationId, command, secs * 1000, agentName);
+        }
+        case 'terminal_read': {
+          const lines = Number.isFinite(Number(args.lines)) ? Math.round(Number(args.lines)) : 100;
+          return { ok: true, text: term.read(conversationId, lines) };
+        }
+        case 'terminal_send_keys': {
+          const keys = typeof args.keys === 'string' ? args.keys.slice(0, 5000) : '';
+          if (!keys) return { ok: false, text: 'keys is required.' };
+          // Ctrl-C alone only stops things, so it never needs asking.
+          if (keys !== '\u0003' && !(await confirm(`${agentName} wants to type into the terminal`, JSON.stringify(keys).slice(1, -1)))) return { ok: false, text: 'The user declined these keystrokes.' };
+          return { ok: true, text: term.sendKeys(conversationId, keys) };
+        }
+        default:
+          return { ok: false, text: `Unknown terminal tool: ${name}` };
+      }
+    } catch (err) {
+      return { ok: false, text: `Terminal error: ${(err as Error).message}` };
+    }
   }
 
   private async browserCall(conversationId: string, agentId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -256,6 +323,7 @@ export class NestTools {
     const me = conversation ? this.db.getAgent(conversation.agentId, true) : null;
     if (!conversation || !me) return { ok: false, text: 'This conversation no longer exists in Nest.' };
     if (name.startsWith('browser_')) return this.browserCall(conversationId, me.id, me.name, name, args);
+    if (name.startsWith('terminal_')) return this.terminalCall(conversationId, me.name, name, args);
     const str = (k: string, max = 20000) => (typeof args[k] === 'string' ? (args[k] as string).trim().slice(0, max) : '');
 
     switch (name) {

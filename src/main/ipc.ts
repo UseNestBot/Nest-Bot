@@ -10,6 +10,7 @@ import type { NestDb } from './db';
 import type { ProviderRegistry, RunManager } from './runs';
 import type { Scheduler } from './scheduler';
 import type { AgentBrowserHost } from './agentBrowser';
+import type { TerminalHost } from './terminal';
 import { sanitizeAccess, type ConnectorService } from './connectors';
 import type { ModelStore } from './models';
 import type { Updater } from './updater';
@@ -32,6 +33,11 @@ function assertString(v: unknown, name: string, max = 200_000): string {
   if (typeof v !== 'string') throw new UserFacingError(`${name} must be text`);
   if (v.length > max) throw new UserFacingError(`${name} is too long`);
   return v;
+}
+
+/** A terminal width or height in character cells. */
+function termSize(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(Math.max(Math.round(v), 10), 500) : fallback;
 }
 
 /** Validate agent drafts at the trust boundary; the renderer is not trusted to send well-formed data. */
@@ -93,6 +99,8 @@ export function createHandlers(deps: {
   getWindow: () => BrowserWindow | null;
   /** Agents' built-in browsers (live viewport, take-over). */
   browser?: AgentBrowserHost;
+  /** Conversations' shared terminals. */
+  terminal?: TerminalHost;
   defaultWorkspace: () => string;
   broadcast: (event: NestEvent) => void;
   /** `changed`: the keys the patch actually set. */
@@ -227,6 +235,7 @@ export function createHandlers(deps: {
     deleteConversation: async (id) => {
       await runs.cancel(id);
       db.deleteConversation(assertString(id, 'id'));
+      deps.terminal?.close(id);
       deps.broadcast({ type: 'conversation-deleted', conversationId: id });
     },
 
@@ -288,6 +297,22 @@ export function createHandlers(deps: {
     browserNavigate: async (agentId, action, url) => {
       if (!['back', 'forward', 'reload', 'close', 'open'].includes(action)) throw new UserFacingError('Unknown browser action');
       await deps.browser?.navigate(assertString(agentId, 'agentId', 100), action, url ? assertString(url, 'url', 4000) : undefined);
+    },
+    terminalAttach: (conversationId) => deps.terminal?.attach(assertString(conversationId, 'conversationId', 100)) ?? null,
+    terminalOpen: (conversationId, cols, rows) => {
+      const id = assertString(conversationId, 'conversationId', 100);
+      if (!db.getConversation(id)) throw new UserFacingError('That conversation no longer exists.');
+      if (!deps.terminal) throw new UserFacingError('The terminal is not available.');
+      return deps.terminal.open(id, termSize(cols, 120), termSize(rows, 30));
+    },
+    terminalInput: (conversationId, data) => {
+      deps.terminal?.input(assertString(conversationId, 'conversationId', 100), assertString(data, 'data', 100_000));
+    },
+    terminalResize: (conversationId, cols, rows) => {
+      deps.terminal?.resize(assertString(conversationId, 'conversationId', 100), termSize(cols, 120), termSize(rows, 30));
+    },
+    terminalClose: (conversationId) => {
+      deps.terminal?.close(assertString(conversationId, 'conversationId', 100));
     },
     savePastedImage: (data, mimeType) => {
       const ext = PASTED_IMAGE_EXT[assertString(mimeType, 'Image type', 40)];

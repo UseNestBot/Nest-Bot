@@ -130,7 +130,7 @@ export class RunManager {
     const notes = this.db.memoryForAgent(agent.id, conversation.projectId);
     const memDigest = memoryDigest(notes);
     const project = conversation.projectId ? this.db.getProject(conversation.projectId) : null;
-    const cwd = conversation.workspace ?? this.ensureFolder(project?.workspace ?? this.defaultWorkspace());
+    const cwd = this.workspaceFor(conversation);
     const mcp = this.mcpLauncher?.(conversation.id) ?? null;
     const skip = resolveSkip(conversation.permissions, agent.permissions, settings);
     const projectContext = project
@@ -435,6 +435,12 @@ export class RunManager {
     return { runId: run.id };
   }
 
+
+  /** The folder a conversation's agent (and its terminal) works in, created if needed. */
+  workspaceFor(conversation: Conversation): string {
+    const project = conversation.projectId ? this.db.getProject(conversation.projectId) : null;
+    return conversation.workspace ?? this.ensureFolder(project?.workspace ?? this.defaultWorkspace());
+  }
 
   private ensureFolder(dir: string): string {
     mkdirSync(dir, { recursive: true });

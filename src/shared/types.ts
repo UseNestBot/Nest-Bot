@@ -374,6 +374,9 @@ export type NestEvent =
   | { type: 'browser-state'; state: BrowserStateInfo }
   /** A JPEG data URL of the agent's browser, sent only while a viewport watches it. */
   | { type: 'browser-frame'; agentId: string; data: string }
+  | { type: 'terminal-state'; state: TerminalStateInfo }
+  /** Output from a conversation's shared terminal (raw, with escape codes). */
+  | { type: 'terminal-data'; conversationId: string; data: string }
   | { type: 'update'; state: UpdateState }
   /** Remote access changed (a phone paired, a device was removed, the server started or stopped). */
   | { type: 'remote-changed' };
@@ -667,6 +670,22 @@ export interface BrowserStateInfo {
   action: string | null;
   canGoBack: boolean;
   canGoForward: boolean;
+  closed?: boolean;
+}
+
+/** A conversation's shared terminal, which the user and the agent both type into. */
+export interface TerminalStateInfo {
+  conversationId: string;
+  shell: string;
+  /** The folder the shell started in. */
+  cwd: string;
+  /** A command is running (the shell is not at its prompt). */
+  busy: boolean;
+  /** What the agent is running right now, or null. */
+  action: string | null;
+  lastExit: number | null;
+  /** A real pseudo-terminal; false when Nest falls back to plain pipes (no full-screen programs). */
+  pty: boolean;
   closed?: boolean;
 }
 
