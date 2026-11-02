@@ -340,8 +340,13 @@ function MessageView({ message, run, detail, onRemember }: { message: Message; r
     );
   }
 
-  const activities = run ? detail.activities.filter((a) => a.runId === run.id) : [];
-  const approvals = run ? detail.approvals.filter((a) => a.runId === run.id && a.status === 'pending') : [];
+  // A message sent while the agent worked splits its run into several replies; each shows the steps taken during it.
+  const replies = run ? detail.messages.filter((m) => m.runId === run.id && m.role === 'assistant') : [];
+  const index = replies.findIndex((m) => m.id === message.id);
+  const from = index > 0 ? message.createdAt : -Infinity;
+  const until = index >= 0 && index < replies.length - 1 ? replies[index + 1].createdAt : Infinity;
+  const activities = run ? detail.activities.filter((a) => a.runId === run.id && a.createdAt >= from && a.createdAt < until) : [];
+  const approvals = run && until === Infinity ? detail.approvals.filter((a) => a.runId === run.id && a.status === 'pending') : [];
   const streaming = message.status === 'streaming';
   const usage = run?.usage;
   // Run facts live in a tooltip so the transcript stays as clean as a chat thread.

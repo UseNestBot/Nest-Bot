@@ -240,6 +240,7 @@ export function createHandlers(deps: {
     },
 
     sendMessage: (conversationId, text, attachments) => runs.send(assertString(conversationId, 'id'), assertString(text, 'Message'), sanitizeAttachments(attachments)),
+    steerRun: (conversationId, text, attachments) => runs.steer(assertString(conversationId, 'id'), assertString(text, 'Message'), sanitizeAttachments(attachments)),
     cancelRun: (conversationId) => runs.cancel(assertString(conversationId, 'id')),
     respondApproval: (approvalId, choiceId) => runs.respondApproval(assertString(approvalId, 'id'), assertString(choiceId, 'choice')),
 

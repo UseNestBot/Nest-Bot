@@ -23,6 +23,10 @@ interface ActiveRun {
   conversationId: string;
   /** Skip permissions is in effect: every approval is answered automatically. */
   skipped: boolean;
+  /** Hand a user message to the running turn. Resolves false when the turn could not take it. */
+  steer: ((text: string, attachments: Attachment[]) => Promise<boolean>) | null;
+  /** The run is being stopped to make way for a message the user sent while it worked. */
+  steeredAway?: boolean;
 }
 
 export class UserFacingError extends Error {}
@@ -75,6 +79,27 @@ export class RunManager {
       this.emitConversation(this.db.getConversation(conversationId)!);
     }
     return this.startRun(conversation, userMessage, false);
+  }
+
+  /**
+   * Send a message while the agent is working. Providers that can take input mid-turn get it at
+   * the agent's next step; the others are interrupted and the message starts a new turn.
+   */
+  async steer(conversationId: string, text: string, attachments: Attachment[]): Promise<{ runId: string }> {
+    const active = this.active.get(conversationId);
+    if (!active) return this.send(conversationId, text, attachments);
+    if (!text.trim() && !attachments.length) throw new UserFacingError('Message is empty.');
+    if (await active.steer?.(text, attachments)) return { runId: active.run.id };
+    if (this.active.get(conversationId) === active && active.handle) {
+      if (active.handle.steer) {
+        // The turn is already wrapping up; the message goes out as soon as it ends.
+        await active.handle.done;
+      } else {
+        active.steeredAway = true;
+        await active.handle.cancel();
+      }
+    }
+    return this.send(conversationId, text, attachments);
   }
 
   private async assertProviderReady(provider: ProviderId): Promise<void> {
@@ -148,18 +173,22 @@ export class RunManager {
       includedNoteIds: includeMemory ? notes.map((n) => n.id) : [],
     });
     this.broadcast({ type: 'run', run });
-    const assistant = this.db.insertMessage({
-      conversationId: conversation.id,
-      runId: run.id,
-      role: 'assistant',
-      kind: 'chat',
-      content: '',
-      status: 'streaming',
-      error: null,
-      attachments: [],
-      linkConversationId: null,
-    });
-    this.broadcast({ type: 'message', message: assistant });
+    const newReply = () => {
+      const message = this.db.insertMessage({
+        conversationId: conversation.id,
+        runId: run.id,
+        role: 'assistant',
+        kind: 'chat',
+        content: '',
+        status: 'streaming',
+        error: null,
+        attachments: [],
+        linkConversationId: null,
+      });
+      this.broadcast({ type: 'message', message });
+      return message;
+    };
+    let assistant = newReply();
 
     if (includeMemory) {
       this.activity(conversation.id, run.id, {
@@ -192,11 +221,13 @@ export class RunManager {
     }
 
     // --- Drive the provider -------------------------------------------------
-    const active: ActiveRun = { run, handle: null, conversationId: conversation.id, skipped: permissions.skipped };
+    const active: ActiveRun = { run, handle: null, conversationId: conversation.id, skipped: permissions.skipped, steer: null };
     this.active.set(conversation.id, active);
 
-    const segments = new Map<string, string>();
-    const order: string[] = [];
+    let segments = new Map<string, string>();
+    let order: string[] = [];
+    /** Text segments that belong to a reply before a steering message; late updates to them are dropped. */
+    const retired = new Set<string>();
     let content = '';
     let lastError: string | null = null;
     let sessionMissing = false;
@@ -221,6 +252,7 @@ export class RunManager {
       if (!flushTimer) flushTimer = setTimeout(() => flush(), 400);
     };
     const setSegment = (id: string, text: string) => {
+      if (retired.has(id)) return;
       if (!segments.has(id)) order.push(id);
       segments.set(id, text);
       content = order.map((k) => segments.get(k) ?? '').filter((t) => t.trim()).join('\n\n');
@@ -318,7 +350,7 @@ export class RunManager {
       const msg = this.db.updateMessage(assistant.id, {
         content,
         status: messageStatus,
-        error: status === 'failed' ? error ?? 'The run failed.' : status === 'interrupted' ? 'Stopped.' : null,
+        error: status === 'failed' ? error ?? 'The run failed.' : status === 'interrupted' ? (active.steeredAway ? 'Stopped for your new message.' : 'Stopped.') : null,
       });
       this.broadcast({ type: 'message', message: msg });
       const finalRun = this.closeRun(run.id, status, status === 'failed' ? error ?? 'The run failed.' : null, usage);
@@ -344,6 +376,34 @@ export class RunManager {
           body: (status === 'failed' ? error ?? 'The run failed.' : content).replace(/\s+/g, ' ').slice(0, 140),
         });
       }
+    };
+
+    // A message sent mid-turn closes the reply so far, and the agent's answer continues below it.
+    active.steer = async (text, attachments) => {
+      const handle = active.handle;
+      if (!handle?.steer || this.active.get(conversation.id) !== active) return false;
+      if (!(await handle.steer(composePrompt([text, attachmentsNote(attachments)]), attachments))) return false;
+      if (this.active.get(conversation.id) !== active) return false;
+      flush(true);
+      this.broadcast({ type: 'message', message: this.db.updateMessage(assistant.id, { content, status: 'complete' }) });
+      const steerMessage = this.db.insertMessage({
+        conversationId: conversation.id,
+        runId: null,
+        role: 'user',
+        kind: 'chat',
+        content: text,
+        status: 'complete',
+        error: null,
+        attachments,
+        linkConversationId: null,
+      });
+      this.broadcast({ type: 'message', message: steerMessage });
+      for (const id of order) retired.add(id);
+      segments = new Map();
+      order = [];
+      content = '';
+      assistant = newReply();
+      return true;
     };
 
     try {

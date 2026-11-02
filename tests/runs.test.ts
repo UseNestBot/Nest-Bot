@@ -122,6 +122,33 @@ for (const provider of ['claude', 'codex'] as ProviderId[]) {
       expect((await finished(a.db, next.runId)).status).toBe('completed');
     });
 
+    it('steers a running turn: the message lands mid-run and the reply continues below it', async () => {
+      const a = boot();
+      const conv = a.db.createConversation(makeAgent(a.db, provider));
+      const { runId } = await a.runs.send(conv.id, 'go [steerable]', []);
+      await new Promise((r) => setTimeout(r, 400));
+      const steered = await a.runs.steer(conv.id, 'use tabs', []);
+      expect(steered.runId).toBe(runId);
+      const run = await finished(a.db, runId);
+      expect(run.status).toBe('completed');
+      const messages = a.db.listMessages(conv.id);
+      expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+      expect(messages[1]).toMatchObject({ runId, status: 'complete', content: 'working on it' });
+      expect(messages[2]).toMatchObject({ runId: null, content: 'use tabs' });
+      expect(messages[3]).toMatchObject({ runId, status: 'complete' });
+      expect(messages[3].content).toContain('steered:use tabs');
+      const next = await a.runs.send(conv.id, 'again', []);
+      expect((await finished(a.db, next.runId)).status).toBe('completed');
+    });
+
+    it('steering an idle conversation just sends the message', async () => {
+      const a = boot();
+      const conv = a.db.createConversation(makeAgent(a.db, provider));
+      const { runId } = await a.runs.steer(conv.id, 'hello', []);
+      expect((await finished(a.db, runId)).status).toBe('completed');
+      expect(a.db.listMessages(conv.id).map((m) => m.role)).toEqual(['user', 'assistant']);
+    });
+
     it('rejects a second message while a turn is running', async () => {
       const a = boot();
       const conv = a.db.createConversation(makeAgent(a.db, provider));
@@ -131,6 +158,23 @@ for (const provider of ['claude', 'codex'] as ProviderId[]) {
     });
   });
 }
+
+describe('steering without provider support', () => {
+  it('stops the turn and sends the message as a new one', async () => {
+    const a = boot();
+    const startTurn = a.claude.startTurn.bind(a.claude);
+    a.claude.startTurn = (input, emit) => ({ ...startTurn(input, emit), steer: undefined });
+    const conv = a.db.createConversation(makeAgent(a.db, 'claude'));
+    const first = await a.runs.send(conv.id, 'go [slow]', []);
+    await new Promise((r) => setTimeout(r, 400));
+    const second = await a.runs.steer(conv.id, 'change course', []);
+    expect(second.runId).not.toBe(first.runId);
+    expect((await finished(a.db, first.runId)).status).toBe('interrupted');
+    expect(assistantFor(a.db, conv.id, first.runId).error).toBe('Stopped for your new message.');
+    expect((await finished(a.db, second.runId)).status).toBe('completed');
+    expect(assistantFor(a.db, conv.id, second.runId).content).toContain('change course');
+  });
+});
 
 describe('failure handling', () => {
   it('Claude: a crashed process fails the run with stderr detail and no corrupted transcript', async () => {

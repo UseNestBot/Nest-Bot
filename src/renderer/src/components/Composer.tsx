@@ -173,12 +173,13 @@ export function Composer({ conversation, running, disabledReason, placeholder = 
     };
   }, []);
 
-  const canSend = !running && !sending && !disabledReason && dictation.state === 'idle' && (text.trim().length > 0 || attachments.length > 0);
+  const canSend = !stopping && !sending && !disabledReason && dictation.state === 'idle' && (text.trim().length > 0 || attachments.length > 0);
 
+  // While the agent works, sending steers it: the message reaches it at its next step.
   const send = async () => {
     if (!canSend) return;
     setSending(true);
-    const res = await attempt(() => api.sendMessage(conversation.id, text, attachments));
+    const res = await attempt(() => (running ? api.steerRun(conversation.id, text, attachments) : api.sendMessage(conversation.id, text, attachments)));
     setSending(false);
     if (res) {
       updateText('');
@@ -265,7 +266,7 @@ export function Composer({ conversation, running, disabledReason, placeholder = 
               }
             }}
             rows={1}
-            placeholder={disabledReason ?? placeholder}
+            placeholder={disabledReason ?? (running ? 'Steer while it works…' : placeholder)}
             aria-label="Message"
             className="scroll-quiet block max-h-[280px] min-h-[36px] min-w-0 flex-1 resize-none bg-transparent px-1.5 py-[7px] text-[15px] leading-[22px] text-ink outline-none placeholder:text-faint"
           />
@@ -287,24 +288,28 @@ export function Composer({ conversation, running, disabledReason, placeholder = 
           </Tooltip>
           )}
           <ModelPicker conversation={conversation} disabled={running} />
-          {running ? (
+          {running && (
             <Tooltip label={stopping ? 'Stopping…' : 'Stop the agent'}>
               <button
                 onClick={stop}
                 disabled={stopping}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-on-primary transition-colors hover:bg-primary-hover disabled:opacity-60"
+                className={cx(
+                  'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-60',
+                  canSend ? 'border border-line text-ink-2 hover:bg-hover hover:text-ink' : 'bg-primary text-on-primary hover:bg-primary-hover',
+                )}
                 aria-label={stopping ? 'Stopping' : 'Stop'}
               >
                 <Square size={12} fill="currentColor" />
               </button>
             </Tooltip>
-          ) : (
-            <Tooltip label="Send" keys={state.settings.sendKey === 'ctrl-enter' ? 'Ctrl+Enter' : 'Enter'}>
+          )}
+          {(!running || canSend) && (
+            <Tooltip label={running ? 'Steer: the agent reads this at its next step' : 'Send'} keys={state.settings.sendKey === 'ctrl-enter' ? 'Ctrl+Enter' : 'Enter'}>
               <button
                 onClick={send}
                 disabled={!canSend}
                 className={cx('inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors', canSend ? 'bg-primary text-on-primary hover:bg-primary-hover' : 'bg-hover text-faint')}
-                aria-label="Send"
+                aria-label={running ? 'Steer' : 'Send'}
               >
                 <ArrowUp size={17} strokeWidth={2.2} />
               </button>

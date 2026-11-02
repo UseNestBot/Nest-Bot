@@ -96,6 +96,8 @@ export interface NestApi {
 
   // Runs
   sendMessage(conversationId: string, text: string, attachments: Attachment[]): Promise<{ runId: string }>;
+  /** Send a message to the agent while it is working; it takes the message at its next step. */
+  steerRun(conversationId: string, text: string, attachments: Attachment[]): Promise<{ runId: string }>;
   cancelRun(conversationId: string): Promise<void>;
   respondApproval(approvalId: string, choiceId: string): Promise<void>;
 
@@ -191,6 +193,7 @@ export const API_METHODS = [
   'updateConversation',
   'deleteConversation',
   'sendMessage',
+  'steerRun',
   'cancelRun',
   'respondApproval',
   'listMemory',

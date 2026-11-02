@@ -78,6 +78,12 @@ export interface TurnHandle {
   /** Request a clean stop. Resolves once the provider acknowledged or was force-stopped. */
   cancel(): Promise<void>;
   respondApproval(requestId: string, choiceId: string): void;
+  /**
+   * Deliver a user message to the running turn so the agent picks it up at its next step.
+   * Resolves false when the turn can no longer take it (e.g. it is already wrapping up).
+   * Absent for providers that cannot steer; Nest then interrupts and resends.
+   */
+  steer?(prompt: string, attachments: Attachment[]): Promise<boolean>;
   /** Resolves when the turn is fully over (never rejects). */
   done: Promise<void>;
 }
