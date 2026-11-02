@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/UseNestBot/Nest-Bot/releases/latest"><img src="https://img.shields.io/github/v/release/UseNestBot/Nest-Bot?style=flat-square&color=3b82f6&label=download" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/windows%20%7C%20linux-x64-18181b?style=flat-square" alt="Windows and Linux x64">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-18181b?style=flat-square" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-18181b?style=flat-square" alt="GPL-3.0 license"></a>
 </p>
 
 <p align="center">
@@ -227,4 +227,6 @@ Bug reports, fixes and new provider adapters are welcome. Start with [CONTRIBUTI
 
 ## License
 
-[GPL3.0](LICENSE)
+Copyright (C) 2026 Jonah DaCosta
+
+Nest is licensed under the GNU General Public License v3.0 only (GPL-3.0-only). See [LICENSE](LICENSE) for the full text.

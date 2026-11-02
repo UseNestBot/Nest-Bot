@@ -90,4 +90,4 @@ Nest's promise is that it runs the official CLIs on the user's own subscription 
 
 ## License
 
-By contributing you agree that your contributions are licensed under the same license as the project, see [LICENSE](LICENSE).
+By contributing you agree that your contributions are licensed under the same license as the project, GPL-3.0-only, see [LICENSE](LICENSE).
