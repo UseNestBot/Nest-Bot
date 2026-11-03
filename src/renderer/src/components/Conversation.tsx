@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowDown, ArrowLeftToLine, ArrowRightToLine, BookmarkPlus, Check, Copy, CornerDownRight, ExternalLink, FileText, GripVertical, Image as ImageIcon, Info, MoreHorizontal, PanelRight, Send, SquareTerminal, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowLeftToLine, ArrowRightToLine, BookmarkPlus, Check, Copy, CornerDownRight, ExternalLink, FileText, GitBranch, GripVertical, Image as ImageIcon, Info, MoreHorizontal, PanelRight, Send, SquareTerminal, Trash2, X } from 'lucide-react';
 import type { Agent, Attachment, ConversationDetail, Message, Run } from '@shared/types';
 import { PROVIDER_LABEL } from '@shared/types';
 import { api, IS_REMOTE } from '../api';
@@ -10,6 +10,7 @@ import { Avatar } from './Avatar';
 import { BrowserViewport } from './BrowserViewport';
 import { Composer } from './Composer';
 import { DetailsPanel } from './DetailsPanel';
+import { GitPanel, useGitPanel } from './GitPanel';
 import { Markdown } from './Markdown';
 import { TerminalPanel, useTerminalPanel } from './TerminalPanel';
 import { Button, Field, IconButton, MenuItem, Modal, Popover, Segmented, Tooltip, cx, inputClass } from './ui';
@@ -74,16 +75,25 @@ export function ConversationView({ detail, pane = SOLO }: { detail: Conversation
   const [remember, setRemember] = useState<Message | null>(null);
   const [detailsOpen, setDetailsOpen, detailsFloat] = useDetailsOpen(conversation.id, pane.split);
   const [terminalOpen, setTerminalOpen] = useTerminalPanel(conversation.id);
+  const [gitOpen, setGitOpen] = useGitPanel(conversation.id);
+  // Details and source control share the right edge. Source control covers details while open,
+  // without changing whether details is remembered as open.
+  const toggleDetails = () => {
+    if (!gitOpen) return setDetailsOpen(!detailsOpen);
+    setGitOpen(false);
+    if (!detailsOpen) setDetailsOpen(true);
+  };
 
   return (
     <div className="relative flex h-full min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <ConversationHeader detail={detail} agent={agent} pane={pane} onHandoff={() => setHandoffOpen(true)} detailsOpen={detailsOpen} detailsFloat={detailsFloat} onToggleDetails={() => setDetailsOpen(!detailsOpen)} terminalOpen={terminalOpen} onToggleTerminal={() => setTerminalOpen(!terminalOpen)} />
+        <ConversationHeader detail={detail} agent={agent} pane={pane} onHandoff={() => setHandoffOpen(true)} detailsOpen={detailsOpen && !gitOpen} detailsFloat={detailsFloat} onToggleDetails={toggleDetails} gitOpen={gitOpen} onToggleGit={() => setGitOpen(!gitOpen)} terminalOpen={terminalOpen} onToggleTerminal={() => setTerminalOpen(!terminalOpen)} />
         <Transcript detail={detail} agent={agent} onRemember={setRemember} />
         {terminalOpen && <TerminalPanel conversationId={conversation.id} agent={agent} onClose={() => setTerminalOpen(false)} />}
         <Composer conversation={conversation} running={running} active={pane.focused} disabledReason={disabledReason} placeholder={`Message ${agent?.name ?? 'agent'}`} />
       </div>
-      {detailsOpen && agent && <DetailsPanel agent={agent} conversation={conversation} floating={detailsFloat} titlebar={pane.last} onClose={() => setDetailsOpen(false)} />}
+      {gitOpen && <GitPanel scope={{ kind: 'conversation', id: conversation.id }} floating={detailsFloat} titlebar={pane.last} onClose={() => setGitOpen(false)} />}
+      {detailsOpen && !gitOpen && agent && <DetailsPanel agent={agent} conversation={conversation} floating={detailsFloat} titlebar={pane.last} onClose={() => setDetailsOpen(false)} />}
       {handoffOpen && <HandoffDialog detail={detail} onClose={() => setHandoffOpen(false)} />}
       {remember && agent && <RememberDialog message={remember} agent={agent} onClose={() => setRemember(null)} />}
     </div>
@@ -98,6 +108,8 @@ function ConversationHeader({
   detailsOpen,
   detailsFloat,
   onToggleDetails,
+  gitOpen,
+  onToggleGit,
   terminalOpen,
   onToggleTerminal,
 }: {
@@ -109,6 +121,8 @@ function ConversationHeader({
   /** The details panel floats over the chat rather than taking the header's right edge. */
   detailsFloat: boolean;
   onToggleDetails: () => void;
+  gitOpen: boolean;
+  onToggleGit: () => void;
   terminalOpen: boolean;
   onToggleTerminal: () => void;
 }) {
@@ -192,6 +206,9 @@ function ConversationHeader({
           <SquareTerminal size={16} strokeWidth={1.8} />
         </IconButton>
       )}
+      <IconButton label={gitOpen ? 'Hide source control' : 'Show source control'} tip={gitOpen ? 'Hide source control' : 'Source control (git)'} onClick={onToggleGit} className={cx(gitOpen && 'bg-hover text-ink')} aria-pressed={gitOpen}>
+        <GitBranch size={16} strokeWidth={1.8} />
+      </IconButton>
       <IconButton label={detailsOpen ? 'Hide details' : 'Show details'} onClick={onToggleDetails} className={cx(detailsOpen && 'bg-hover text-ink')} aria-pressed={detailsOpen}>
         <PanelRight size={17} strokeWidth={1.8} />
       </IconButton>
@@ -263,7 +280,7 @@ function ConversationHeader({
           <X size={16} strokeWidth={1.8} />
         </IconButton>
       )}
-      {pane.last && (!detailsOpen || detailsFloat) && <div className="titlebar-spacer" />}
+      {pane.last && (!(detailsOpen || gitOpen) || detailsFloat) && <div className="titlebar-spacer" />}
     </header>
   );
 }

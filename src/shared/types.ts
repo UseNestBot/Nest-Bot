@@ -403,7 +403,86 @@ export type NestEvent =
   | { type: 'terminal-data'; conversationId: string; data: string }
   | { type: 'update'; state: UpdateState }
   /** Remote access changed (a phone paired, a device was removed, the server started or stopped). */
-  | { type: 'remote-changed' };
+  | { type: 'remote-changed' }
+  /** Something in a repository changed (a commit, a checkout, the index): views of it should refresh. */
+  | { type: 'git-changed'; root: string };
+
+// ---------------------------------------------------------------------------
+// Git
+
+/**
+ * Which chat or project a git call is about. The main process resolves its
+ * working folder; the renderer never sends a folder path of its own.
+ */
+export interface GitScope {
+  kind: 'conversation' | 'project';
+  id: string;
+}
+
+export type GitChange = 'modified' | 'typechange' | 'added' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'conflicted';
+
+/** One changed path. `staged` and `unstaged` are what changed in the index and in the working tree. */
+export interface GitFileChange {
+  /** Relative to the repository root, with forward slashes. */
+  path: string;
+  /** The path before a rename or copy. */
+  origPath: string | null;
+  staged: GitChange | null;
+  unstaged: GitChange | null;
+}
+
+export interface GitRemote {
+  name: string;
+  /** Any user name or token embedded in the URL is removed. */
+  url: string;
+}
+
+export interface GitRepoStatus {
+  root: string;
+  /** null when HEAD is detached. */
+  branch: string | null;
+  /** Short hash of HEAD; null before the first commit. */
+  head: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  files: GitFileChange[];
+  /** More changed paths than Nest lists. */
+  truncated: boolean;
+  /** An operation git is in the middle of, waiting for the user. */
+  operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert' | null;
+  remotes: GitRemote[];
+}
+
+/** A chat's or project's working folder as git sees it. */
+export interface GitStatus {
+  folder: string;
+  /** Whether git is installed; null version when it isn't. */
+  git: { available: boolean; version: string | null };
+  /** null when the folder isn't in a repository. */
+  repo: GitRepoStatus | null;
+}
+
+export interface GitBranch {
+  /** e.g. "main", or "origin/main" for a remote branch. */
+  name: string;
+  remote: boolean;
+  current: boolean;
+  upstream: string | null;
+  /** Short hash. */
+  head: string;
+  subject: string;
+  /** Committer date, ms since epoch. */
+  date: number;
+}
+
+export interface GitDiff {
+  path: string;
+  /** Unified diff text, without colour. */
+  text: string;
+  binary: boolean;
+  truncated: boolean;
+}
 
 /** A phone or browser paired with this Nest for remote access. */
 export interface RemoteDevice {

@@ -7,6 +7,7 @@ import { API_PROVIDERS, PROVIDERS, type ApiProviderId, type AppSettings, type Ne
 import { ConnectorService } from './connectors';
 import { AgentBrowserHost } from './agentBrowser';
 import { TerminalHost } from './terminal';
+import { GitService } from './git/service';
 import { NestDb } from './db';
 import { PROVIDER_SETTINGS } from './settings';
 import { createHandlers, invokeHandler, registerIpc } from './ipc';
@@ -106,6 +107,7 @@ function broadcast(event: NestEvent): void {
 
 let agentBrowser: AgentBrowserHost | null = null;
 let terminals: TerminalHost | null = null;
+let git: GitService | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -198,7 +200,14 @@ app.whenReady().then(() => {
   protocol.handle(MODEL_SCHEME, (request) => models.handle(request));
   runs.connectorPolicy = (agentId, provider) => connectors.policyFor(agentId, provider);
   claude.onServersSeen = (seen) => connectors.noteSeen('claude', seen);
-  runs.onRunFinished = (conversationId, run, message) => runs.handleHandoffCompletion(conversationId, run, message);
+  const gitService = new GitService((root) => broadcast({ type: 'git-changed', root }));
+  git = gitService;
+  runs.onRunFinished = (conversationId, run, message) => {
+    runs.handleHandoffCompletion(conversationId, run, message);
+    // The agent may have edited files or committed: refresh any open view of its repository.
+    const conversation = db.getConversation(conversationId);
+    if (conversation) void gitService.notifyFolder(runs.workspaceFor(conversation));
+  };
   runs.onAttention = (e) => {
     const settings = db.getSettings();
     if (!settings.notifyOn[e.kind]) return;
@@ -283,6 +292,7 @@ app.whenReady().then(() => {
     models,
     browser: browserHost,
     terminal: terminalHost,
+    git: gitService,
     getWindow: () => mainWindow,
     defaultWorkspace: () => effectiveDefaultWorkspace(db),
     broadcast,
@@ -327,6 +337,7 @@ app.on('before-quit', (event) => {
     scheduler?.stop();
     updater?.stop();
     terminals?.closeAll();
+    git?.close();
     await remote?.stop();
     await Promise.race([runs?.cancelAll(), new Promise((r) => setTimeout(r, 6000))]);
     bridge?.stop();

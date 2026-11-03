@@ -10,6 +10,7 @@ import { Button, EmptyState, Field, IconButton, MenuItem, MenuLabel, Popover, Se
 import { NoteRow } from './Memory';
 import { confirmDialog } from '../components/confirm';
 import { MobileBack } from '../components/MobileBack';
+import { GitView } from '../components/GitPanel';
 
 const toDraft = (p: Project): ProjectDraft => ({ name: p.name, brief: p.brief, workspace: p.workspace, color: p.color });
 
@@ -252,6 +253,13 @@ function ProjectBody({ project }: { project: Project }) {
                 </Button>
               </div>
             )}
+          </section>
+
+          <section>
+            <SectionLabel>Repository</SectionLabel>
+            <div className="rounded-2xl border border-line bg-panel p-4">
+              <GitView scope={{ kind: 'project', id: project.id }} />
+            </div>
           </section>
 
           <ProjectMemory project={project} />
