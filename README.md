@@ -132,7 +132,7 @@ Want plain API access instead? Paste a key for OpenRouter, OpenAI, Anthropic, Ge
 - **Switch models mid chat.** Jump from Claude to Codex and the new provider gets a short summary of what it missed. Sessions are never faked as shared.
 - **Connectors.** Gmail, Calendar, Slack and anything else you've hooked up in Claude Code or Codex. Allow all, none or a few per agent.
 - **Browser.** Claude Code agents can drive your real Chrome through Claude in Chrome, one approval at a time.
-- **Git and pull requests.** Each chat and project has a source control panel for its working folder: stage, commit, branch, push and pull, a history graph, and pull requests on GitHub, GitLab and Forgejo with their checks, reviews and logs. Your agent can write the commit message or pull request for you to review, and you can hand it a review or failing checks to fix. Nest signs in with what you already use (`gh`, `glab`, `tea` or git's credential helper) or a token you paste.
+- **Git and pull requests.** Each chat and project has a source control panel for its working folder: stage, commit, branch, push and pull, a history graph, pull requests on GitHub, GitLab and Forgejo with their checks, reviews and logs, merging, and issues. Give a chat its own worktree so its agent works on a branch without touching other chats' files. Your agent can write the commit message or pull request for you to review, and you can hand it an issue, a review or failing checks to work on. Nest signs in with what you already use (`gh`, `glab`, `tea` or git's credential helper), your browser, or a token you paste.
 - **Voice.** Hit the mic or Ctrl+Shift+Space. Whisper runs locally. Audio never leaves your machine.
 - **On your phone.** Chat, approve tool calls and get notifications from your phone while the agents keep running on your PC. See [Use Nest from your phone](#use-nest-from-your-phone).
 - **Safe by default.** Agents ask before acting. Bypass and full access modes aren't offered. Stray `*_API_KEY` env vars get stripped so you never get billed by accident.
@@ -159,7 +159,7 @@ Your PC has to be on with Nest open. Paired devices are listed under Remote acce
 | Agents, chats, memory, routines | `%APPDATA%\Nest\nest.sqlite` |
 | Daily backups (newest 10 kept) | `%APPDATA%\Nest\backups` |
 | API keys (encrypted with Windows DPAPI) | `%APPDATA%\Nest\api-keys.json` |
-| Self-hosted forges and pasted forge tokens (encrypted the same way) | `%APPDATA%\Nest\forges.json` |
+| Self-hosted forges, pasted forge tokens and browser sign-ins (encrypted the same way) | `%APPDATA%\Nest\forges.json` |
 | Remote access settings and paired devices (tokens stored hashed) | `%APPDATA%\Nest\remote.json` |
 | Files sent from your phone | `%APPDATA%\Nest\uploads` |
 | Default working folder for agents | `Documents\Nest` |
@@ -194,7 +194,7 @@ Any other setting key (see `AppSettings` in `src/shared/types.ts`) works too, su
 - **Cancel** sends the provider's interrupt, then force stops the process tree if it doesn't settle. Partial text is kept and marked *Stopped*.
 - **Restart safety.** Anything still running when Nest closes is marked interrupted on next launch. Pending approvals expire.
 - **Credentials.** Nest never reads, copies or stores the agent CLIs' logins. Each tool keeps its own.
-- **Git and forges.** Git commands run through your own `git`, with prompts turned off so nothing waits on a hidden terminal. For forge APIs Nest asks, in order: a token you saved in Settings, the forge's CLI (`gh auth token`, `glab config get token`, `tea`'s config) and `git credential fill` with interactive sign-in disabled. Those tokens stay in memory in the main process and are never written anywhere or sent to the renderer. Agents get `draft_commit_message`, `draft_pull_request`, `list_pull_requests`, `get_pull_request` and `get_check_log`. `create_pull_request` and `comment_on_pull_request` always show an approval card, even when permissions are skipped. Paired phones can read pull requests and history but not commit, push, open or comment.
+- **Git and forges.** Git commands run through your own `git`, with prompts turned off so nothing waits on a hidden terminal. For forge APIs Nest asks, in order: a token you saved in Settings, a browser sign-in, the forge's CLI (`gh auth token`, `glab config get token`, `tea`'s config) and `git credential fill` with interactive sign-in disabled. CLI and helper tokens stay in memory in the main process and are never written anywhere or sent to the renderer. Browser sign-in is the OAuth device flow (GitHub and GitLab; Forgejo and Gitea don't have one), so no client secret ships with Nest: it needs an OAuth app's client ID, built in for a host in `src/main/forge/oauth.ts` or set per host in Settings. A chat's worktree goes beside the main working tree, in `<repo>.worktrees/<branch>`. Agents get `draft_commit_message`, `draft_pull_request`, `list_pull_requests`, `get_pull_request`, `get_check_log`, `list_issues` and `get_issue`. `create_pull_request`, `merge_pull_request`, `comment_on_pull_request`, `create_issue` and `comment_on_issue` always show an approval card, even when permissions are skipped. Paired phones can read history, pull requests and issues but not commit, push, open, merge or comment.
 
 </details>
 

@@ -459,6 +459,8 @@ export interface GitRepoStatus {
   /** An operation git is in the middle of, waiting for the user. */
   operation: 'merge' | 'rebase' | 'cherry-pick' | 'revert' | null;
   remotes: GitRemote[];
+  /** Set when this is a linked worktree: the main working tree it belongs to. */
+  worktreeOf: string | null;
 }
 
 /** A chat's or project's working folder as git sees it. */
@@ -553,9 +555,9 @@ export type ForgeKind = 'github' | 'gitlab' | 'forgejo';
 export const FORGE_LABEL: Record<ForgeKind, string> = { github: 'GitHub', gitlab: 'GitLab', forgejo: 'Forgejo / Gitea' };
 
 /** Where a forge token came from. A saved token wins; otherwise the first of the others that works. */
-export type ForgeTokenSource = 'saved' | 'gh' | 'glab' | 'tea' | 'credential';
+export type ForgeTokenSource = 'saved' | 'oauth' | 'gh' | 'glab' | 'tea' | 'credential';
 
-export const FORGE_SOURCE_LABEL: Record<ForgeTokenSource, string> = { saved: 'token saved in Nest', gh: 'GitHub CLI (gh)', glab: 'GitLab CLI (glab)', tea: 'Gitea CLI (tea)', credential: 'git credential helper' };
+export const FORGE_SOURCE_LABEL: Record<ForgeTokenSource, string> = { saved: 'token saved in Nest', oauth: 'browser sign-in', gh: 'GitHub CLI (gh)', glab: 'GitLab CLI (glab)', tea: 'Gitea CLI (tea)', credential: 'git credential helper' };
 
 /** One forge host and whether Nest can use it. Tokens never leave the main process. */
 export interface ForgeAccount {
@@ -570,6 +572,19 @@ export interface ForgeAccount {
   /** Last four characters of a saved token. */
   savedHint: string | null;
   error: string | null;
+  /** Browser sign-in: unavailable (the forge has no device flow, or no OAuth app is set up), or ready to start. */
+  oauth: 'unavailable' | 'available' | 'signed-in';
+  /** The OAuth app client ID set for this host, when the user set one. */
+  oauthClientId: string | null;
+}
+
+/** A browser sign-in in progress: the user enters `userCode` at `verificationUrl`. */
+export interface ForgeOAuthStart {
+  host: string;
+  userCode: string;
+  verificationUrl: string;
+  /** ms since epoch. */
+  expiresAt: number;
 }
 
 /** The forge repository behind a chat's or project's working folder. */
@@ -641,10 +656,38 @@ export interface ForgeComment {
   review: 'approved' | 'changes-requested' | 'commented' | null;
 }
 
+export type ForgeMergeMethod = 'merge' | 'squash' | 'rebase';
+
 export interface ForgePullDetail extends ForgePull {
   body: string;
   headSha: string | null;
   checkList: ForgeCheck[];
+  comments: ForgeComment[];
+  /** false when the forge says it can't merge (conflicts, blocked); null when it doesn't know yet. */
+  mergeable: boolean | null;
+  /** Why it can't merge, in the forge's words, when it says. */
+  mergeBlocker: string | null;
+  /** The ways this forge can merge it, preferred first. */
+  mergeMethods: ForgeMergeMethod[];
+  /** Whether the head branch is in the same repository (so merging can delete it). */
+  sameRepo: boolean;
+}
+
+export interface ForgeIssue {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  author: string;
+  url: string;
+  /** ms since epoch. */
+  updatedAt: number;
+  labels: string[];
+  commentCount: number;
+}
+
+export interface ForgeIssueDetail extends ForgeIssue {
+  body: string;
+  assignees: string[];
   comments: ForgeComment[];
 }
 

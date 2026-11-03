@@ -1,7 +1,8 @@
-import { FORGE_LABEL, FORGE_SOURCE_LABEL, type ForgeAccount, type ForgeKind, type ForgeLookup, type ForgePull, type ForgePullDetail, type ForgePullDraft, type GitRepoStatus } from '@shared/types';
+import { FORGE_LABEL, FORGE_SOURCE_LABEL, type ForgeAccount, type ForgeIssue, type ForgeIssueDetail, type ForgeKind, type ForgeLookup, type ForgeMergeMethod, type ForgeOAuthStart, type ForgePull, type ForgePullDetail, type ForgePullDraft, type GitRepoStatus } from '@shared/types';
 import type { GitService } from '../git/service';
 import { discoverCredentials, type DiscoveryDeps, type ForgeCredential, type ForgeStore } from './accounts';
 import { ForgeError, makeClient, type Fetch, type ForgeClient, type PullListState } from './clients';
+import { BUILT_IN_OAUTH_CLIENTS, pollDeviceFlow, refreshOAuth, startDeviceFlow, supportsDeviceFlow } from './oauth';
 import { KNOWN_HOSTS, forgeKindFor, normalizeHost, parseRemoteUrl, type RemoteLocation } from './remote';
 
 /** How long a host's sign-in check is trusted before Nest looks again. */
@@ -38,6 +39,10 @@ export class ForgeService {
   private readonly currentCache = new Map<string, { pull: ForgePull | null; at: number }>();
   /** Hosts seen in repositories this session, listed in Settings. */
   private readonly seen = new Set<string>();
+  /** Browser sign-ins waiting for the user, by host. */
+  private readonly signIns = new Map<string, AbortController>();
+  /** Why the last browser sign-in for a host failed, until the next check. */
+  private readonly signInErrors = new Map<string, string>();
 
   constructor(
     private readonly opts: {
@@ -56,11 +61,36 @@ export class ForgeService {
   // -------------------------------------------------------------------------
   // Accounts
 
+  private oauthClient(host: string): string | null {
+    return this.opts.store.client(host) ?? BUILT_IN_OAUTH_CLIENTS[host] ?? null;
+  }
+
+  /** The browser sign-in's token, refreshed first when it's about to expire. */
+  private async oauthCredential(host: string, kind: ForgeKind): Promise<ForgeCredential | null> {
+    let t = this.opts.store.oauth(host);
+    if (!t) return null;
+    if (t.expiresAt && t.expiresAt < Date.now() + 60_000) {
+      try {
+        t = await refreshOAuth(this.opts.fetch, kind, host, t);
+        this.opts.store.setOAuth(host, t);
+      } catch (err) {
+        this.opts.store.clearOAuth(host);
+        this.signInErrors.set(host, (err as Error).message);
+        return null;
+      }
+    }
+    return { token: t.access, username: null, source: 'oauth', expiresAt: t.expiresAt };
+  }
+
   private async check(host: string, kind: ForgeKind): Promise<AccountEntry> {
     const custom = this.opts.store.hosts().some((h) => h.host === host);
     const saved = this.opts.store.token(host);
-    const base: ForgeAccount = { host, kind, custom, state: 'signed-out', user: null, source: null, savedHint: this.opts.store.hint(host), error: null };
+    // Refresh (or drop) an expiring browser sign-in before saying whether there is one.
+    const browser = await this.oauthCredential(host, kind);
+    const oauth = !supportsDeviceFlow(kind) ? 'unavailable' : browser ? 'signed-in' : this.oauthClient(host) ? 'available' : 'unavailable';
+    const base: ForgeAccount = { host, kind, custom, state: 'signed-out', user: null, source: null, savedHint: this.opts.store.hint(host), error: null, oauth, oauthClientId: this.opts.store.client(host) };
     const creds: ForgeCredential[] = saved ? [{ token: saved, username: null, source: 'saved' }] : [];
+    if (browser) creds.push(browser);
     creds.push(...(await discoverCredentials(host, kind, this.opts.discovery)));
     let firstError: string | null = null;
     for (const cred of creds) {
@@ -73,7 +103,8 @@ export class ForgeService {
         if (cred.source === 'saved') break;
       }
     }
-    return { account: { ...base, state: firstError ? 'error' : 'signed-out', error: firstError }, cred: null, at: Date.now() };
+    const error = firstError ?? this.signInErrors.get(host) ?? null;
+    return { account: { ...base, state: error ? 'error' : 'signed-out', error }, cred: null, at: Date.now() };
   }
 
   /** A host's account, from cache unless `force` or it's gone stale. */
@@ -85,7 +116,8 @@ export class ForgeService {
     const kind = this.kindFor(host);
     if (!kind) throw new ForgeError(`Nest doesn’t know what kind of forge ${host} is. Add it in Settings → Git & forges.`);
     const cached = this.accountCache.get(host);
-    if (!force && cached && Date.now() - cached.at < ACCOUNT_TTL_MS && cached.account.kind === kind) return cached;
+    const expiring = Boolean(cached?.cred?.expiresAt && cached.cred.expiresAt < Date.now() + 60_000);
+    if (!force && !expiring && cached && Date.now() - cached.at < ACCOUNT_TTL_MS && cached.account.kind === kind) return cached;
     const inflight = this.pending.get(host);
     if (inflight && !force) return inflight;
     const p = this.check(host, kind).finally(() => this.pending.delete(host));
@@ -133,6 +165,55 @@ export class ForgeService {
 
   async clearToken(host: string): Promise<ForgeAccount> {
     this.opts.store.clearToken(host);
+    this.forget(host);
+    return this.account(host, true);
+  }
+
+  /** Set (or with null, clear) the OAuth app client ID used for a host's browser sign-in. */
+  async setOAuthClient(host: string, clientId: string | null): Promise<ForgeAccount> {
+    const clean = clientId?.trim() || null;
+    if (clean && !/^[A-Za-z0-9._-]{4,200}$/.test(clean)) throw new ForgeError('That doesn’t look like an OAuth client ID.');
+    this.opts.store.setClient(host, clean);
+    this.forget(host);
+    return this.account(host, true);
+  }
+
+  /**
+   * Start a browser sign-in: the user enters the returned code on the forge's
+   * site while Nest waits for the token in the background.
+   */
+  async startSignIn(host: string): Promise<ForgeOAuthStart> {
+    const kind = this.kindFor(host);
+    if (!kind) throw new ForgeError(`Nest doesn’t know what kind of forge ${host} is.`);
+    if (!supportsDeviceFlow(kind)) throw new ForgeError(`${FORGE_LABEL[kind]} doesn’t offer browser sign-in for desktop apps. Paste a token instead.`);
+    const clientId = this.oauthClient(host);
+    if (!clientId) throw new ForgeError(`Browser sign-in for ${host} needs an OAuth app. Set its client ID in Settings → Git & forges, or paste a token.`);
+    this.cancelSignIn(host);
+    const start = await startDeviceFlow(this.opts.fetch, kind, host, clientId);
+    const abort = new AbortController();
+    this.signIns.set(host, abort);
+    this.signInErrors.delete(host);
+    void pollDeviceFlow(this.opts.fetch, kind, host, clientId, start, abort.signal)
+      .then((token) => this.opts.store.setOAuth(host, token))
+      .catch((err: Error) => {
+        if (!abort.signal.aborted) this.signInErrors.set(host, err.message);
+      })
+      .finally(() => {
+        if (this.signIns.get(host) === abort) this.signIns.delete(host);
+        if (!abort.signal.aborted) this.forget(host);
+      });
+    return { host, userCode: start.userCode, verificationUrl: start.verificationUrl, expiresAt: start.expiresAt };
+  }
+
+  cancelSignIn(host: string): void {
+    this.signIns.get(host)?.abort();
+    this.signIns.delete(host);
+  }
+
+  /** Forget the browser sign-in. The forge keeps the authorisation until the user revokes it there. */
+  async signOut(host: string): Promise<ForgeAccount> {
+    this.opts.store.clearOAuth(host);
+    this.signInErrors.delete(host);
     this.forget(host);
     return this.account(host, true);
   }
@@ -265,6 +346,34 @@ export class ForgeService {
     if (!body.trim()) throw new ForgeError('Write a comment first.');
     const { base } = await this.requireTarget(folder);
     await this.call(base.host, `comment on #${number}`, (c) => c.comment(base.path, number, body));
+  }
+
+  async merge(folder: string, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void> {
+    const { base } = await this.requireTarget(folder);
+    await this.call(base.host, `merge #${number}`, (c) => c.merge(base.path, number, method, deleteBranch));
+    this.currentCache.clear();
+  }
+
+  async listIssues(folder: string, state: 'open' | 'closed' = 'open'): Promise<ForgeIssue[]> {
+    const { base } = await this.requireTarget(folder);
+    return this.call(base.host, 'list issues', (c) => c.listIssues(base.path, state));
+  }
+
+  async getIssue(folder: string, number: number): Promise<ForgeIssueDetail> {
+    const { base } = await this.requireTarget(folder);
+    return this.call(base.host, `read issue #${number}`, (c) => c.getIssue(base.path, number));
+  }
+
+  async createIssue(folder: string, title: string, body: string): Promise<ForgeIssue> {
+    if (!title.trim()) throw new ForgeError('Give the issue a title.');
+    const { base } = await this.requireTarget(folder);
+    return this.call(base.host, 'open the issue', (c) => c.createIssue(base.path, title.trim(), body));
+  }
+
+  async commentIssue(folder: string, number: number, body: string): Promise<void> {
+    if (!body.trim()) throw new ForgeError('Write a comment first.');
+    const { base } = await this.requireTarget(folder);
+    await this.call(base.host, `comment on issue #${number}`, (c) => c.commentIssue(base.path, number, body));
   }
 
   /** Open a pull request for the current branch, pushing it first if the forge doesn't have all of it yet. */

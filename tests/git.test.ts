@@ -249,6 +249,38 @@ describe.skipIf(!findGit())('GitService', () => {
     await expect(git.showCommit(dir, 'deadbeef')).rejects.toThrow(/no commit/);
   });
 
+  it('gives a chat its own worktree and removes it again', async () => {
+    const dir = path.join(base, 'wt-main');
+    mkdirSync(dir);
+    await git.init(dir);
+    await expect(git.createWorktree(dir, 'feat')).rejects.toThrow(/first commit/);
+    writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    await git.commit(dir, 'Base', true);
+    expect((await git.status(dir)).repo?.worktreeOf).toBeNull();
+
+    const wt = await git.createWorktree(dir, 'feat/one');
+    expect(wt).toBe(path.join(base, 'wt-main.worktrees', 'feat-one'));
+    const inside = (await git.status(wt)).repo!;
+    expect(inside).toMatchObject({ branch: 'feat/one', worktreeOf: dir });
+    await expect(git.createWorktree(dir, 'feat/one')).rejects.toThrow(/already a folder/);
+    await expect(git.createWorktree(dir, 'bad..name')).rejects.toThrow(/can’t be a branch name/);
+    // A worktree of a worktree still goes beside the main one.
+    const second = await git.createWorktree(wt, 'two');
+    expect(path.dirname(second)).toBe(path.join(base, 'wt-main.worktrees'));
+    expect((await git.removeWorktree(second, false))).toBe(dir);
+
+    writeFileSync(path.join(wt, 'dirty.txt'), 'x');
+    await expect(git.removeWorktree(wt, false)).rejects.toThrow(/uncommitted changes/);
+    expect(await git.removeWorktree(wt, true)).toBe(dir);
+    expect(existsSync(wt)).toBe(false);
+    // The branch is kept.
+    expect((await git.branches(dir)).map((b) => b.name)).toContain('feat/one');
+    await expect(git.removeWorktree(dir, false)).rejects.toThrow(/isn’t a linked worktree/);
+    // An existing branch that isn't checked out is used as is.
+    const again = await git.createWorktree(dir, 'feat/one');
+    expect((await git.status(again)).repo?.branch).toBe('feat/one');
+  });
+
   it('reads and sets who commits are made as', async () => {
     expect(await git.identity()).toEqual({ name: 'Nest Test', email: 'test@nest.local' });
     await expect(git.setIdentity({ name: 'X', email: 'not an email' })).rejects.toThrow(/email/);

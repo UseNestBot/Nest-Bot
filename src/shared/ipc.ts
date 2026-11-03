@@ -17,8 +17,12 @@ import type {
   Conversation,
   ConversationDetail,
   ForgeAccount,
+  ForgeIssue,
+  ForgeIssueDetail,
   ForgeKind,
   ForgeLookup,
+  ForgeMergeMethod,
+  ForgeOAuthStart,
   ForgePull,
   ForgePullDetail,
   ForgePullDraft,
@@ -202,6 +206,10 @@ export interface NestApi {
   gitShowCommit(scope: GitScope, hash: string): Promise<GitCommitDetail>;
   /** One file's change in a commit, against its first parent. */
   gitCommitDiff(scope: GitScope, hash: string, path: string): Promise<GitDiff>;
+  /** Give a chat its own worktree on a new (or existing, not checked out) branch, and switch the chat to it. */
+  gitCreateWorktree(scope: GitScope, branch: string): Promise<GitStatus>;
+  /** Remove the chat's linked worktree and switch it back to the main working tree. `force` loses uncommitted changes. */
+  gitRemoveWorktree(scope: GitScope, force: boolean): Promise<GitStatus>;
   /** The installed git and who it commits as. */
   getGitInfo(): Promise<GitInfo>;
   /** Set (or with empty values, unset) the global user.name and user.email. */
@@ -226,6 +234,19 @@ export interface NestApi {
   /** Open a pull request for the current branch, pushing it first when needed. */
   forgeCreatePull(scope: GitScope, draft: ForgePullDraft): Promise<ForgePull>;
   forgeComment(scope: GitScope, number: number, body: string): Promise<void>;
+  /** Merge a pull request; `deleteBranch` deletes its head branch too when it's in the same repository. */
+  forgeMergePull(scope: GitScope, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void>;
+  forgeListIssues(scope: GitScope, state: 'open' | 'closed'): Promise<ForgeIssue[]>;
+  forgeGetIssue(scope: GitScope, number: number): Promise<ForgeIssueDetail>;
+  forgeCreateIssue(scope: GitScope, title: string, body: string): Promise<ForgeIssue>;
+  forgeCommentIssue(scope: GitScope, number: number, body: string): Promise<void>;
+  /** Start a browser (OAuth device flow) sign-in; Nest saves the token when the user approves it. */
+  forgeStartSignIn(host: string): Promise<ForgeOAuthStart>;
+  forgeCancelSignIn(host: string): Promise<void>;
+  /** Forget a browser sign-in. */
+  forgeSignOut(host: string): Promise<ForgeAccount>;
+  /** Set the OAuth app client ID for a host's browser sign-in, or null to clear it. */
+  forgeSetOAuthClient(host: string, clientId: string | null): Promise<ForgeAccount>;
 
   // Updates (GitHub releases, installed silently by the NSIS installer)
   getUpdateState(): Promise<UpdateState>;
@@ -333,6 +354,8 @@ export const API_METHODS = [
   'gitLog',
   'gitShowCommit',
   'gitCommitDiff',
+  'gitCreateWorktree',
+  'gitRemoveWorktree',
   'getGitInfo',
   'setGitIdentity',
   'forgeAccounts',
@@ -346,6 +369,15 @@ export const API_METHODS = [
   'forgeCheckLog',
   'forgeCreatePull',
   'forgeComment',
+  'forgeMergePull',
+  'forgeListIssues',
+  'forgeGetIssue',
+  'forgeCreateIssue',
+  'forgeCommentIssue',
+  'forgeStartSignIn',
+  'forgeCancelSignIn',
+  'forgeSignOut',
+  'forgeSetOAuthClient',
   'getUpdateState',
   'checkForUpdates',
   'installUpdate',

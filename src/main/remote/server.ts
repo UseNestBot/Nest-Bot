@@ -53,16 +53,25 @@ export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
   'gitFetch',
   'gitPull',
   'gitPush',
+  'gitCreateWorktree',
+  'gitRemoveWorktree',
   'getGitInfo',
   'setGitIdentity',
-  // Forge sign-ins live on the PC; phones can read pull requests and checks but not open or comment on them.
+  // Forge sign-ins live on the PC; phones can read pull requests, issues and checks but not open, merge or comment.
   'forgeAccounts',
   'forgeAddHost',
   'forgeRemoveHost',
   'forgeSetToken',
   'forgeClearToken',
+  'forgeStartSignIn',
+  'forgeCancelSignIn',
+  'forgeSignOut',
+  'forgeSetOAuthClient',
   'forgeCreatePull',
   'forgeComment',
+  'forgeMergePull',
+  'forgeCreateIssue',
+  'forgeCommentIssue',
 ]);
 
 /** Settings a paired device can't change: which programs run, and how much they may do unasked. */

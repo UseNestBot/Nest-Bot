@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Loader2, MessageSquare, RefreshCw, ScrollText, Sparkles } from 'lucide-react';
-import { FORGE_LABEL, type ForgeCheck, type ForgeCheckState, type ForgeComment, type ForgeLookup, type ForgePull, type ForgePullDetail, type GitRepoStatus, type GitScope } from '@shared/types';
+import { FORGE_LABEL, type ForgeCheck, type ForgeCheckState, type ForgeComment, type ForgeLookup, type ForgeMergeMethod, type ForgePull, type ForgePullDetail, type GitRepoStatus, type GitScope } from '@shared/types';
 import { api, IS_REMOTE } from '../api';
 import { relativeTime } from '../format';
 import { useStore } from '../store';
+import { confirmDialog } from './confirm';
 import { pullPrompt, useGitDraft } from './gitDrafts';
 import { Markdown } from './Markdown';
-import { Button, Field, IconButton, Modal, Segmented, Toggle, Tooltip, cx, inputClass } from './ui';
+import { Button, Field, IconButton, Modal, Segmented, Select, Toggle, Tooltip, cx, inputClass } from './ui';
 
 /**
  * The forge repository behind a scope's working folder. Looked up again when
@@ -77,7 +78,7 @@ function ReviewBadge({ review }: { review: ForgePull['review'] }) {
 }
 
 /** Why there's nothing to show, with the way out. */
-function ForgeNotice({ lookup }: { lookup: ForgeLookup }) {
+export function ForgeNotice({ lookup }: { lookup: ForgeLookup }) {
   const { navigate } = useStore();
   const settings = !IS_REMOTE && (
     <button className="text-accent hover:underline" onClick={() => navigate({ name: 'settings', section: 'git' })}>
@@ -237,7 +238,17 @@ export function GitPulls({ scope, repo, lookup, onRefreshLookup, onCreate }: { s
           )}
         </>
       )}
-      {open !== null && <PullDialog scope={scope} number={open} onClose={() => setOpen(null)} />}
+      {open !== null && (
+        <PullDialog
+          scope={scope}
+          number={open}
+          onClose={() => setOpen(null)}
+          onChanged={() => {
+            load();
+            onRefreshLookup();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -263,7 +274,7 @@ export function checksPrompt(pr: ForgePullDetail): string {
   return lines.join('\n');
 }
 
-export function PullDialog({ scope, number, onClose }: { scope: GitScope; number: number; onClose: () => void }) {
+export function PullDialog({ scope, number, onClose, onChanged }: { scope: GitScope; number: number; onClose: () => void; onChanged?: () => void }) {
   const { attempt } = useStore();
   const agent = useChatAgent(scope);
   const [pr, setPr] = useState<ForgePullDetail | null>(null);
@@ -363,6 +374,17 @@ export function PullDialog({ scope, number, onClose }: { scope: GitScope; number
             </div>
           )}
 
+          {!IS_REMOTE && pr.state === 'open' && (
+            <MergeBox
+              scope={scope}
+              pr={pr}
+              onMerged={() => {
+                load();
+                onChanged?.();
+              }}
+            />
+          )}
+
           <section>
             {pr.body.trim() ? <Markdown text={pr.body} className="text-[13px]" /> : <p className="text-[13px] italic text-faint">No description.</p>}
           </section>
@@ -424,6 +446,50 @@ export function PullDialog({ scope, number, onClose }: { scope: GitScope; number
         </div>
       )}
     </Modal>
+  );
+}
+
+const METHOD_LABEL: Record<ForgeMergeMethod, string> = { merge: 'Create a merge commit', squash: 'Squash and merge', rebase: 'Rebase and merge' };
+
+/** Merge it on the forge, after asking: a merge is shared with everyone and hard to take back. */
+function MergeBox({ scope, pr, onMerged }: { scope: GitScope; pr: ForgePullDetail; onMerged: () => void }) {
+  const { attempt, toast } = useStore();
+  const [method, setMethod] = useState<ForgeMergeMethod>(pr.mergeMethods[0] ?? 'merge');
+  const [deleteBranch, setDeleteBranch] = useState(pr.sameRepo);
+  const [busy, setBusy] = useState(false);
+  const merge = async () => {
+    const ok = await confirmDialog({
+      title: `${METHOD_LABEL[method]} #${pr.number}?`,
+      message: `${pr.head} goes into ${pr.base} on the forge${deleteBranch && pr.sameRepo ? `, then ${pr.head} is deleted there` : ''}. Everyone with access sees it, and it can’t simply be undone.`,
+      confirmLabel: method === 'squash' ? 'Squash and merge' : method === 'rebase' ? 'Rebase and merge' : 'Merge',
+    });
+    if (!ok) return;
+    setBusy(true);
+    const done = await attempt(() => api.forgeMergePull(scope, pr.number, method, deleteBranch && pr.sameRepo).then(() => true));
+    setBusy(false);
+    if (done) {
+      toast(`Merged #${pr.number} into ${pr.base}.`, 'info');
+      onMerged();
+    }
+  };
+  return (
+    <div className={cx('rounded-xl border px-3 py-2.5', pr.mergeable === false ? 'border-warn-line bg-warn-bg' : 'border-line')}>
+      <p className={cx('mb-2 text-[12.5px]', pr.mergeable === false ? 'text-warn-ink' : 'text-muted')}>
+        {pr.mergeBlocker ?? (pr.mergeable === null ? 'The forge is still working out whether this can merge.' : pr.checks === 'failure' ? 'It can merge, but some checks failed.' : 'Ready to merge.')}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Select<ForgeMergeMethod> label="How to merge" value={method} onChange={setMethod} options={pr.mergeMethods.map((m) => ({ value: m, label: METHOD_LABEL[m] }))} />
+        {pr.sameRepo && (
+          <label className="flex items-center gap-2 text-[12.5px] text-ink-2">
+            <Toggle checked={deleteBranch} onChange={setDeleteBranch} label="Delete the branch after merging" /> Delete {pr.head}
+          </label>
+        )}
+        <div className="flex-1" />
+        <Button variant="primary" size="sm" disabled={busy || pr.mergeable === false} onClick={() => void merge()}>
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <GitMerge size={13} />} {method === 'squash' ? 'Squash and merge' : method === 'rebase' ? 'Rebase and merge' : 'Merge'}
+        </Button>
+      </div>
+    </div>
   );
 }
 

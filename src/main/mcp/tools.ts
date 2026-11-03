@@ -1,7 +1,7 @@
 import { describeCadence, sanitizeCadence } from '@shared/schedule';
 import { AVATAR_PALETTE } from '@shared/templates';
 import path from 'node:path';
-import { DEFAULT_PERMISSIONS, FORGE_LABEL, PROVIDER_LABEL, PROVIDERS, isProviderId, type ForgeLookup, type ForgePull, type ForgePullDetail, type ForgePullDraft, type GitDraft, type Project, type ProviderId } from '@shared/types';
+import { DEFAULT_PERMISSIONS, FORGE_LABEL, PROVIDER_LABEL, PROVIDERS, isProviderId, type ForgeIssue, type ForgeIssueDetail, type ForgeLookup, type ForgeMergeMethod, type ForgePull, type ForgePullDetail, type ForgePullDraft, type GitDraft, type Project, type ProviderId } from '@shared/types';
 import type { NestDb } from '../db';
 import type { RunManager } from '../runs';
 import type { Scheduler } from '../scheduler';
@@ -45,6 +45,11 @@ export interface ForgeTools {
   checkLog(folder: string, checkId: string): Promise<string>;
   createPull(folder: string, draft: ForgePullDraft): Promise<ForgePull>;
   comment(folder: string, number: number, body: string): Promise<void>;
+  merge(folder: string, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void>;
+  listIssues(folder: string, state: 'open' | 'closed'): Promise<ForgeIssue[]>;
+  getIssue(folder: string, number: number): Promise<ForgeIssueDetail>;
+  createIssue(folder: string, title: string, body: string): Promise<ForgeIssue>;
+  commentIssue(folder: string, number: number, body: string): Promise<void>;
 }
 
 const MAX_DELEGATION_DEPTH = 3;
@@ -331,6 +336,38 @@ export const GIT_TOOL_DEFS: ToolDef[] = [
     description: 'Post a comment on a pull request, as the user. The user approves it first.',
     inputSchema: obj({ number: { type: 'integer' }, body: { type: 'string', description: 'Markdown.' } }, ['number', 'body']),
   },
+  {
+    name: 'merge_pull_request',
+    description: 'Merge a pull request on the forge. The user approves it first. Check get_pull_request first: it says whether it can be merged and which ways the forge allows.',
+    inputSchema: obj(
+      {
+        number: { type: 'integer' },
+        method: { type: 'string', enum: ['merge', 'squash', 'rebase'], description: 'Default merge. GitLab offers merge and squash.' },
+        delete_branch: { type: 'boolean', description: 'Also delete the head branch (same repository only).' },
+      },
+      ['number'],
+    ),
+  },
+  {
+    name: 'list_issues',
+    description: 'List issues for the repository in your working folder, newest activity first.',
+    inputSchema: obj({ state: { type: 'string', enum: ['open', 'closed'], description: 'Default open.' } }),
+  },
+  {
+    name: 'get_issue',
+    description: 'Read an issue: its description, labels, assignees and comments.',
+    inputSchema: obj({ number: { type: 'integer' } }, ['number']),
+  },
+  {
+    name: 'create_issue',
+    description: 'Open an issue, as the user. The user approves it first.',
+    inputSchema: obj({ title: { type: 'string' }, body: { type: 'string', description: 'Markdown.' } }, ['title']),
+  },
+  {
+    name: 'comment_on_issue',
+    description: 'Post a comment on an issue, as the user. The user approves it first.',
+    inputSchema: obj({ number: { type: 'integer' }, body: { type: 'string', description: 'Markdown.' } }, ['number', 'body']),
+  },
 ];
 
 const GIT_TOOL_NAMES = new Set(GIT_TOOL_DEFS.map((t) => t.name));
@@ -346,6 +383,7 @@ export function describePull(pr: ForgePullDetail): string {
   ];
   for (const c of pr.checkList) lines.push(`- [${c.state}] ${c.name} (id: ${c.id}${c.hasLog ? ', log available' : ''})${c.url ? ` ${c.url}` : ''}`);
   lines.push('', 'Description:', pr.body.trim() || '(none)');
+  if (pr.state === 'open') lines.push(pr.mergeBlocker ? `Can’t merge yet: ${pr.mergeBlocker}` : `${pr.mergeable === null ? 'Mergeable: not known yet' : 'Can merge'} (${pr.mergeMethods.join(', ')})`);
   if (pr.comments.length) {
     lines.push('', 'Reviews and comments, oldest first:');
     for (const c of pr.comments) {
@@ -356,6 +394,20 @@ export function describePull(pr: ForgePullDetail): string {
   }
   const text = lines.join('\n');
   return text.length > MAX_PULL_TEXT ? `${text.slice(0, MAX_PULL_TEXT)}\n…(cut; open the pull request for the rest)` : text;
+}
+
+/** An issue as text for an agent. */
+export function describeIssue(i: ForgeIssueDetail): string {
+  const lines = [`#${i.number} ${i.title} (${i.state}) by ${i.author}`, i.url];
+  if (i.labels.length) lines.push(`Labels: ${i.labels.join(', ')}`);
+  if (i.assignees.length) lines.push(`Assigned to: ${i.assignees.join(', ')}`);
+  lines.push('', i.body.trim() || '(no description)');
+  if (i.comments.length) {
+    lines.push('', 'Comments, oldest first:');
+    for (const c of i.comments) lines.push(`- ${c.author}: ${c.body.trim() || '(no text)'}`);
+  }
+  const text = lines.join('\n');
+  return text.length > MAX_PULL_TEXT ? `${text.slice(0, MAX_PULL_TEXT)}\n…(cut; open the issue for the rest)` : text;
 }
 
 function describePullLine(p: ForgePull): string {
@@ -528,6 +580,66 @@ export class NestTools {
           if (choice !== 'allow') return { ok: false, text: 'The user declined posting this comment.' };
           await git.forge.comment(folder, num, body);
           return { ok: true, text: `Commented on #${num}.` };
+        }
+        case 'merge_pull_request': {
+          if (!Number.isInteger(num) || num < 1) return { ok: false, text: 'number is required.' };
+          const method: ForgeMergeMethod = args.method === 'squash' || args.method === 'rebase' ? args.method : 'merge';
+          const pr = await git.forge.getPull(folder, num);
+          if (!pr.mergeMethods.includes(method)) return { ok: false, text: `This forge can’t ${method} here. Use one of: ${pr.mergeMethods.join(', ')}.` };
+          const remove = args.delete_branch === true && pr.sameRepo;
+          const choice = await this.runs.requestLocalApproval(
+            conversationId,
+            {
+              title: `${agentName} wants to merge pull request #${num}`,
+              action: pr.title,
+              target: `${pr.head} → ${pr.base} (${method}${remove ? ', then delete the branch' : ''})`,
+              reason: pr.mergeBlocker,
+              detail: null,
+              approveLabel: method === 'squash' ? 'Squash and merge' : method === 'rebase' ? 'Rebase and merge' : 'Merge',
+            },
+            true,
+          );
+          if (choice !== 'allow') return { ok: false, text: 'The user declined merging this pull request.' };
+          await git.forge.merge(folder, num, method, remove);
+          return { ok: true, text: `Merged #${num} into ${pr.base}.` };
+        }
+        case 'list_issues': {
+          const state = args.state === 'closed' ? 'closed' : 'open';
+          const issues = await git.forge.listIssues(folder, state);
+          return {
+            ok: true,
+            text: issues.length ? issues.map((i) => `#${i.number} ${i.title} [${i.state}${i.labels.length ? `; ${i.labels.join(', ')}` : ''}] by ${i.author}, ${i.commentCount} comment${i.commentCount === 1 ? '' : 's'} ${i.url}`).join('\n') : `No ${state} issues.`,
+          };
+        }
+        case 'get_issue': {
+          if (!Number.isInteger(num) || num < 1) return { ok: false, text: 'number is required.' };
+          return { ok: true, text: describeIssue(await git.forge.getIssue(folder, num)) };
+        }
+        case 'create_issue': {
+          const title = str('title', 256).trim();
+          if (!title) return { ok: false, text: 'title is required.' };
+          const body = str('body', 65_000);
+          const choice = await this.runs.requestLocalApproval(
+            conversationId,
+            { title: `${agentName} wants to open an issue`, action: title, target: null, reason: null, detail: body.trim() ? body.slice(0, 4000) : null, approveLabel: 'Open issue' },
+            true,
+          );
+          if (choice !== 'allow') return { ok: false, text: 'The user declined opening this issue.' };
+          const issue = await git.forge.createIssue(folder, title, body);
+          return { ok: true, text: `Opened #${issue.number}: ${issue.url}` };
+        }
+        case 'comment_on_issue': {
+          if (!Number.isInteger(num) || num < 1) return { ok: false, text: 'number is required.' };
+          const body = str('body', 65_000);
+          if (!body.trim()) return { ok: false, text: 'body is required.' };
+          const choice = await this.runs.requestLocalApproval(
+            conversationId,
+            { title: `${agentName} wants to comment on issue #${num}`, action: body.slice(0, 4000), target: null, reason: null, detail: null, approveLabel: 'Post comment' },
+            true,
+          );
+          if (choice !== 'allow') return { ok: false, text: 'The user declined posting this comment.' };
+          await git.forge.commentIssue(folder, num, body);
+          return { ok: true, text: `Commented on issue #${num}.` };
         }
         default:
           return { ok: false, text: `Unknown git tool: ${name}` };

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Check, ChevronDown, CloudDownload, FolderGit2, GitBranch, Loader2, Minus, PanelRightClose, Plus, RefreshCw, Sparkles, Undo2, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, ChevronDown, CloudDownload, FolderGit2, FolderMinus, GitBranch, Loader2, Minus, PanelRightClose, Plus, RefreshCw, Sparkles, Undo2, Upload } from 'lucide-react';
 import type { GitBranch as Branch, GitDiff, GitFileChange, GitScope, GitStatus } from '@shared/types';
 import { api, IS_REMOTE } from '../api';
 import { useStore } from '../store';
 import { confirmDialog } from './confirm';
 import { GitHistory } from './GitHistory';
+import { GitIssues } from './GitIssues';
 import { CreatePullDialog, CurrentPull, GitPulls, PullDialog, useChatAgent, useForge } from './GitPulls';
 import { commitPrompt, onGitDraft, useGitDraft } from './gitDrafts';
 import { DiffText, LETTER, TONE } from './gitUi';
@@ -29,7 +30,7 @@ export function useGitPanel(conversationId: string): [boolean, (open: boolean) =
   return [open, set];
 }
 
-type Tab = 'changes' | 'history' | 'pulls';
+type Tab = 'changes' | 'history' | 'pulls' | 'issues';
 /** Each scope's last tab, for this session. */
 const tabs = new Map<string, Tab>();
 
@@ -340,6 +341,7 @@ function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitSt
           The working folder is inside the repository at <span className="break-all font-mono text-[11px] text-ink-2">{repo.root}</span>.
         </p>
       )}
+      {repo.worktreeOf && <WorktreeNote scope={scope} repo={repo} onDone={refresh} />}
       {repo.operation && (
         <div className="rounded-xl border border-warn-line bg-warn-bg px-3 py-2 text-[12.5px] text-warn-ink">
           A {repo.operation} is in progress. Finish or abort it in the terminal (git {repo.operation} --continue or --abort).
@@ -362,11 +364,13 @@ function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitSt
         options={[
           { value: 'changes', label: hasChanges ? `Changes ${repo.files.length}${repo.truncated ? '+' : ''}` : 'Changes' },
           { value: 'history', label: 'History' },
-          { value: 'pulls', label: 'Pull requests' },
+          { value: 'pulls', label: forge.lookup?.repo?.kind === 'gitlab' ? 'MRs' : 'PRs' },
+          { value: 'issues', label: 'Issues' },
         ]}
       />
 
       {tab === 'history' && <GitHistory scope={scope} version={`${repo.head}|${repo.branch}|${repo.upstream}|${repo.ahead}|${repo.behind}`} />}
+      {tab === 'issues' && <GitIssues scope={scope} lookup={forge.lookup} />}
       {tab === 'pulls' && <GitPulls scope={scope} repo={repo} lookup={forge.lookup} onRefreshLookup={forge.refresh} onCreate={() => setCreateOpen(true)} />}
 
       {tab === 'changes' && (
@@ -465,7 +469,59 @@ function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitSt
           }}
         />
       )}
-      {pullOpen !== null && <PullDialog scope={scope} number={pullOpen} onClose={() => setPullOpen(null)} />}
+      {pullOpen !== null && (
+        <PullDialog
+          scope={scope}
+          number={pullOpen}
+          onClose={() => setPullOpen(null)}
+          onChanged={() => {
+            forge.refresh();
+            refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** This chat works in a linked worktree: say where the main one is, and offer to go back. */
+function WorktreeNote({ scope, repo, onDone }: { scope: GitScope; repo: NonNullable<GitStatus['repo']>; onDone: () => void }) {
+  const { attempt } = useStore();
+  const [busy, setBusy] = useState(false);
+  const chat = scope.kind === 'conversation' && !IS_REMOTE;
+  const remove = async () => {
+    const ok = await confirmDialog({
+      title: 'Remove this worktree?',
+      message: `Its folder is deleted and the chat goes back to ${repo.worktreeOf}. The ${repo.branch ?? 'worktree’s'} branch and its commits are kept.`,
+      confirmLabel: 'Remove worktree',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.gitRemoveWorktree(scope, false);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!/uncommitted changes/.test(message)) await attempt(() => Promise.reject(err));
+      else if (await confirmDialog({ title: 'The worktree has uncommitted changes', message: 'Remove it anyway? Those changes are lost.', confirmLabel: 'Remove and lose them', tone: 'danger' })) {
+        await attempt(() => api.gitRemoveWorktree(scope, true));
+      }
+    }
+    setBusy(false);
+    onDone();
+  };
+  return (
+    <div className="flex items-start gap-2 rounded-xl bg-sunken px-3 py-2 text-[12.5px] text-muted">
+      <FolderGit2 size={14} className="mt-0.5 shrink-0" />
+      <span className="min-w-0 flex-1">
+        A worktree of <span className="break-all font-mono text-[11px] text-ink-2">{repo.worktreeOf}</span>
+        {chat ? ', just for this chat.' : '.'}
+      </span>
+      {chat && (
+        <IconButton label="Remove this worktree" tip="Remove this worktree and go back to the main one" disabled={busy} onClick={() => void remove()} className="h-6! w-6!">
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <FolderMinus size={13} />}
+        </IconButton>
+      )}
     </div>
   );
 }
@@ -551,12 +607,13 @@ function BranchPicker({ scope, repo, readOnly, onChanged }: { scope: GitScope; r
     await attempt(() => api.gitCheckout(scope, branch));
     onChanged();
   };
-  const create = async (close: () => void) => {
+  const create = async (close: () => void, worktree = false) => {
     const clean = name.trim();
     if (!clean) return;
     close();
     const ok = await attempt(async () => {
-      await api.gitCreateBranch(scope, clean);
+      if (worktree) await api.gitCreateWorktree(scope, clean);
+      else await api.gitCreateBranch(scope, clean);
       return true;
     });
     if (ok) setName('');
@@ -594,9 +651,18 @@ function BranchPicker({ scope, repo, readOnly, onChanged }: { scope: GitScope; r
                 onKeyDown={(e) => e.key === 'Enter' && void create(close)}
               />
               {name.trim() && (
-                <Button size="sm" className="mt-1.5 w-full" onClick={() => void create(close)}>
-                  <Plus size={13} /> Create “{name.trim()}” from {repo.branch ?? 'here'}
-                </Button>
+                <>
+                  <Button size="sm" className="mt-1.5 w-full" onClick={() => void create(close)}>
+                    <Plus size={13} /> Create “{name.trim()}” from {repo.branch ?? 'here'}
+                  </Button>
+                  {scope.kind === 'conversation' && repo.head && (
+                    <Tooltip label="A separate folder on the new branch, just for this chat, so its agent doesn’t touch other chats’ work.">
+                      <Button size="sm" variant="ghost" className="mt-1 w-full" onClick={() => void create(close, true)}>
+                        <FolderGit2 size={13} /> …in its own worktree for this chat
+                      </Button>
+                    </Tooltip>
+                  )}
+                </>
               )}
             </div>
             {!branches && (

@@ -8,6 +8,9 @@ import { layoutGraph } from '@shared/gitGraph';
 import { ForgeStore, discoverCredentials, parseCredential, teaTokenFrom, type DiscoveryDeps } from '../src/main/forge/accounts';
 import { ForgejoClient, GitHubClient, GitLabClient, ForgeError, rollUp, type Fetch } from '../src/main/forge/clients';
 import { apiBase, forgeKindFor, normalizeHost, parseRemoteUrl } from '../src/main/forge/remote';
+import { pollDeviceFlow, refreshOAuth, startDeviceFlow } from '../src/main/forge/oauth';
+import { ForgeService } from '../src/main/forge/service';
+import type { GitService } from '../src/main/git/service';
 import { parseCommitFiles, parseLog, parseRefs } from '../src/main/git/parse';
 import { REMOTE_BLOCKED } from '../src/main/remote/server';
 
@@ -363,6 +366,137 @@ describe('Forgejo', () => {
   });
 });
 
+describe('merging', () => {
+  it('reads GitHub’s merge state and deletes a same-repository branch after merging', async () => {
+    const seen: Array<{ key: string; init?: RequestInit }> = [];
+    const api = 'https://api.github.com/repos/o/r';
+    const pr = { number: 7, title: 'Fix', state: 'open', user: { login: 'ann' }, head: { ref: 'feat/x', sha: 'abc', repo: { full_name: 'o/r' } }, base: { ref: 'main', repo: { full_name: 'o/r' } }, html_url: 'u', mergeable: false, mergeable_state: 'dirty' };
+    const gh = new GitHubClient(fakeFetch({ [`GET ${api}/pulls/7`]: pr, [`PUT ${api}/pulls/7/merge`]: { merged: true }, [`DELETE ${api}/git/refs/heads/feat/x`]: '' }, seen), 'github.com', cred);
+    const detail = await gh.getPull('o/r', 7);
+    expect(detail).toMatchObject({ mergeable: false, mergeBlocker: 'It has conflicts with the base branch.', sameRepo: true, mergeMethods: ['merge', 'squash', 'rebase'] });
+    await gh.merge('o/r', 7, 'squash', true);
+    const put = seen.find((r) => r.key.startsWith('PUT'));
+    expect(JSON.parse(String(put?.init?.body))).toEqual({ merge_method: 'squash' });
+    expect(seen.some((r) => r.key === `DELETE ${api}/git/refs/heads/feat/x`)).toBe(true);
+  });
+
+  it('merges on GitLab and Forgejo with their own options', async () => {
+    const seen: Array<{ key: string; init?: RequestInit }> = [];
+    const fetch = fakeFetch({ 'PUT https://gitlab.com/api/v4/projects/g%2Fp/merge_requests/3/merge': {}, 'POST https://codeberg.org/api/v1/repos/o/r/pulls/4/merge': '' }, seen);
+    await new GitLabClient(fetch, 'gitlab.com', cred).merge('g/p', 3, 'squash', true);
+    await new ForgejoClient(fetch, 'codeberg.org', cred).merge('o/r', 4, 'rebase', false);
+    expect(JSON.parse(String(seen[0].init?.body))).toEqual({ squash: true, should_remove_source_branch: true });
+    expect(JSON.parse(String(seen[1].init?.body))).toEqual({ Do: 'rebase', delete_branch_after_merge: false });
+  });
+
+  it('explains why GitLab won’t merge yet', async () => {
+    const base = 'https://gitlab.com/api/v4/projects/g%2Fp';
+    const gl = new GitLabClient(
+      fakeFetch({ [`GET ${base}/merge_requests/3`]: { iid: 3, title: 'x', state: 'opened', source_branch: 'a', target_branch: 'main', detailed_merge_status: 'discussions_not_resolved', source_project_id: 1, target_project_id: 1 } }),
+      'gitlab.com',
+      cred,
+    );
+    expect(await gl.getPull('g/p', 3)).toMatchObject({ mergeable: false, mergeBlocker: 'Every discussion must be resolved first.', mergeMethods: ['merge', 'squash'], sameRepo: true });
+  });
+});
+
+describe('issues', () => {
+  it('lists GitHub issues without the pull requests it mixes in', async () => {
+    const gh = new GitHubClient(
+      fakeFetch({
+        'GET https://api.github.com/repos/o/r/issues?state=open&sort=updated&per_page=30': [
+          { number: 1, title: 'Bug', state: 'open', user: { login: 'a' }, html_url: 'u1', updated_at: '2026-11-01T00:00:00Z', labels: [{ name: 'bug' }], comments: 2 },
+          { number: 2, title: 'A PR', state: 'open', user: { login: 'b' }, pull_request: {}, labels: [] },
+        ],
+      }),
+      'github.com',
+      cred,
+    );
+    expect(await gh.listIssues('o/r', 'open')).toEqual([{ number: 1, title: 'Bug', state: 'open', author: 'a', url: 'u1', updatedAt: Date.parse('2026-11-01T00:00:00Z'), labels: ['bug'], commentCount: 2 }]);
+  });
+
+  it('reads a GitLab issue without system notes and opens one with a description', async () => {
+    const seen: Array<{ key: string; init?: RequestInit }> = [];
+    const base = 'https://gitlab.com/api/v4/projects/g%2Fp/issues';
+    const gl = new GitLabClient(
+      fakeFetch(
+        {
+          [`GET ${base}/5`]: { iid: 5, title: 'Crash', state: 'opened', author: { username: 'a' }, web_url: 'w', labels: ['p1'], user_notes_count: 1, description: 'It crashes', assignees: [{ username: 'me' }] },
+          [`GET ${base}/5/notes?sort=asc&order_by=created_at&per_page=100`]: [
+            { id: 1, system: true, body: 'changed the label', author: { username: 'a' } },
+            { id: 2, system: false, body: 'Same here', author: { username: 'b' }, created_at: '2026-11-01T00:00:00Z' },
+          ],
+          [`POST ${base}`]: { iid: 6, title: 'New', state: 'opened', author: { username: 'me' }, web_url: 'w6', labels: [] },
+        },
+        seen,
+      ),
+      'gitlab.com',
+      cred,
+    );
+    const issue = await gl.getIssue('g/p', 5);
+    expect(issue).toMatchObject({ number: 5, state: 'open', body: 'It crashes', assignees: ['me'], labels: ['p1'] });
+    expect(issue.comments.map((c) => c.body)).toEqual(['Same here']);
+    expect(await gl.createIssue('g/p', 'New', 'Body')).toMatchObject({ number: 6, url: 'w6' });
+    expect(JSON.parse(String(seen.at(-1)?.init?.body))).toEqual({ title: 'New', description: 'Body' });
+  });
+});
+
+describe('browser sign-in', () => {
+  it('runs GitHub’s device flow, backing off when asked', async () => {
+    const answers = [{ error: 'authorization_pending' }, { error: 'slow_down', interval: 10 }, { access_token: 'gho_new', token_type: 'bearer' }];
+    const waits: number[] = [];
+    const seen: string[] = [];
+    const fetch: Fetch = async (url, init) => {
+      seen.push(`${url} ${String(init?.body)}`);
+      if (url === 'https://github.com/login/device/code') return new Response(JSON.stringify({ device_code: 'dc', user_code: 'ABCD-1234', verification_uri: 'https://github.com/login/device', interval: 5, expires_in: 900 }));
+      return new Response(JSON.stringify(answers.shift()));
+    };
+    const start = await startDeviceFlow(fetch, 'github', 'github.com', 'cid');
+    expect(start).toMatchObject({ userCode: 'ABCD-1234', verificationUrl: 'https://github.com/login/device', interval: 5 });
+    const token = await pollDeviceFlow(fetch, 'github', 'github.com', 'cid', start, new AbortController().signal, async (ms) => void waits.push(ms));
+    expect(token).toEqual({ access: 'gho_new', refresh: null, expiresAt: null, clientId: 'cid' });
+    expect(waits).toEqual([5000, 5000, 10000]);
+    expect(seen[0]).toContain('client_id=cid');
+    expect(seen[0]).toContain('scope=repo+read%3Aorg');
+    expect(seen[1]).toContain('grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code');
+  });
+
+  it('stops when the user denies it, and refuses forges without a device flow', async () => {
+    const fetch: Fetch = async () => new Response(JSON.stringify({ error: 'access_denied' }));
+    const start = { deviceCode: 'd', userCode: 'u', verificationUrl: 'v', interval: 1, expiresAt: Date.now() + 60_000 };
+    await expect(pollDeviceFlow(fetch, 'gitlab', 'gitlab.com', 'cid', start, new AbortController().signal, async () => {})).rejects.toThrow(/denied/);
+    await expect(startDeviceFlow(fetch, 'forgejo', 'codeberg.org', 'cid')).rejects.toThrow(/Paste a token/);
+  });
+
+  it('refreshes an expiring GitLab sign-in before using it', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'nest-oauth-'));
+    const store = new ForgeStore(path.join(dir, 'forges.json'), { available: () => true, encrypt: (t) => Buffer.from(t), decrypt: (b) => b.toString() });
+    store.setOAuth('gitlab.com', { access: 'old', refresh: 'r1', expiresAt: Date.now() + 1000, clientId: 'cid' });
+    const used: string[] = [];
+    const fetch: Fetch = async (url, init) => {
+      if (url === 'https://gitlab.com/oauth/token') return new Response(JSON.stringify({ access_token: 'fresh', refresh_token: 'r2', expires_in: 7200 }));
+      used.push((init?.headers as Record<string, string>).Authorization);
+      return new Response(JSON.stringify({ username: 'me' }));
+    };
+    const forge = new ForgeService({ store, git: {} as GitService, fetch, discovery: { exec: async () => ({ code: 1, stdout: '' }), find: () => null, readFile: () => null, git: () => null } });
+    expect(await forge.account('gitlab.com')).toMatchObject({ state: 'ready', user: 'me', source: 'oauth', oauth: 'signed-in' });
+    expect(used).toEqual(['Bearer fresh']);
+    expect(store.oauth('gitlab.com')).toMatchObject({ access: 'fresh', refresh: 'r2' });
+    await expect(refreshOAuth(fetch, 'gitlab', 'gitlab.com', { access: 'x', refresh: null, expiresAt: 0, clientId: 'cid' })).rejects.toThrow(/Sign in again/);
+  });
+
+  it('offers browser sign-in only with an OAuth app set for the host', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'nest-oauth-'));
+    const store = new ForgeStore(path.join(dir, 'forges.json'), { available: () => true, encrypt: (t) => Buffer.from(t), decrypt: (b) => b.toString() });
+    const forge = new ForgeService({ store, git: {} as GitService, fetch: async () => new Response('{}', { status: 401 }), discovery: { exec: async () => ({ code: 1, stdout: '' }), find: () => null, readFile: () => null, git: () => null } });
+    expect((await forge.account('github.com')).oauth).toBe('unavailable');
+    await expect(forge.startSignIn('github.com')).rejects.toThrow(/needs an OAuth app/);
+    expect(await forge.setOAuthClient('github.com', 'Iv1.abc123')).toMatchObject({ oauth: 'available', oauthClientId: 'Iv1.abc123' });
+    expect((await forge.account('codeberg.org')).oauth).toBe('unavailable');
+    await expect(forge.setOAuthClient('github.com', 'not valid!')).rejects.toThrow(/client ID/);
+  });
+});
+
 describe('check roll-up', () => {
   it('fails on any failure, then waits on anything running', () => {
     expect(rollUp([])).toBeNull();
@@ -375,7 +509,27 @@ describe('check roll-up', () => {
 
 describe('phones', () => {
   it('can read pull requests but not sign in, open or comment', () => {
-    for (const m of ['forgeAccounts', 'forgeAddHost', 'forgeRemoveHost', 'forgeSetToken', 'forgeClearToken', 'forgeCreatePull', 'forgeComment', 'setGitIdentity', 'getGitInfo'] as const) expect(REMOTE_BLOCKED.has(m)).toBe(true);
-    for (const m of ['forgeLookup', 'forgeListPulls', 'forgeGetPull', 'forgeCheckLog', 'gitLog', 'gitShowCommit', 'gitCommitDiff'] as const) expect(REMOTE_BLOCKED.has(m)).toBe(false);
+    for (const m of [
+      'forgeAccounts',
+      'forgeAddHost',
+      'forgeRemoveHost',
+      'forgeSetToken',
+      'forgeClearToken',
+      'forgeStartSignIn',
+      'forgeCancelSignIn',
+      'forgeSignOut',
+      'forgeSetOAuthClient',
+      'forgeCreatePull',
+      'forgeComment',
+      'forgeMergePull',
+      'forgeCreateIssue',
+      'forgeCommentIssue',
+      'gitCreateWorktree',
+      'gitRemoveWorktree',
+      'setGitIdentity',
+      'getGitInfo',
+    ] as const)
+      expect(REMOTE_BLOCKED.has(m)).toBe(true);
+    for (const m of ['forgeLookup', 'forgeListPulls', 'forgeGetPull', 'forgeCheckLog', 'forgeListIssues', 'forgeGetIssue', 'gitLog', 'gitShowCommit', 'gitCommitDiff'] as const) expect(REMOTE_BLOCKED.has(m)).toBe(false);
   });
 });

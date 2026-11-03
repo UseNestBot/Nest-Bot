@@ -6,6 +6,7 @@ import type { ForgeKind, ForgeTokenSource } from '@shared/types';
 import type { SecretCipher } from '../apiKeys';
 import { maskKey } from '../apiKeys';
 import { whichAll } from '../providers/process';
+import type { OAuthToken } from './oauth';
 
 const isWindows = process.platform === 'win32';
 const DISCOVERY_TIMEOUT_MS = 15_000;
@@ -16,6 +17,10 @@ interface ForgeFile {
   hosts: Array<{ host: string; kind: ForgeKind }>;
   /** Pasted tokens by host, encrypted, base64. Never plain text. */
   tokens: Record<string, string>;
+  /** Browser sign-ins by host: an encrypted JSON OAuthToken, base64. */
+  oauth?: Record<string, string>;
+  /** OAuth app client IDs the user set, by host. Public, so not encrypted. */
+  clients?: Record<string, string>;
 }
 
 /**
@@ -31,11 +36,12 @@ export class ForgeStore {
   private read(): ForgeFile {
     try {
       const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as ForgeFile;
-      if (parsed?.version === 1) return { version: 1, hosts: Array.isArray(parsed.hosts) ? parsed.hosts : [], tokens: parsed.tokens && typeof parsed.tokens === 'object' ? parsed.tokens : {} };
+      const map = (v: unknown) => (v && typeof v === 'object' ? (v as Record<string, string>) : {});
+      if (parsed?.version === 1) return { version: 1, hosts: Array.isArray(parsed.hosts) ? parsed.hosts : [], tokens: map(parsed.tokens), oauth: map(parsed.oauth), clients: map(parsed.clients) };
     } catch {
       /* missing or unreadable */
     }
-    return { version: 1, hosts: [], tokens: {} };
+    return { version: 1, hosts: [], tokens: {}, oauth: {}, clients: {} };
   }
 
   private write(data: ForgeFile): void {
@@ -59,6 +65,8 @@ export class ForgeStore {
     const data = this.read();
     data.hosts = data.hosts.filter((h) => h.host !== host);
     delete data.tokens[host];
+    delete data.oauth?.[host];
+    delete data.clients?.[host];
     this.write(data);
   }
 
@@ -90,6 +98,44 @@ export class ForgeStore {
     delete data.tokens[host];
     this.write(data);
   }
+
+  oauth(host: string): OAuthToken | null {
+    const blob = this.read().oauth?.[host];
+    if (!blob || !this.cipher.available()) return null;
+    try {
+      const t = JSON.parse(this.cipher.decrypt(Buffer.from(blob, 'base64'))) as OAuthToken;
+      return t?.access ? t : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setOAuth(host: string, token: OAuthToken): void {
+    if (!this.cipher.available()) throw new Error('This computer can’t encrypt the sign-in (no system keyring is available), so Nest won’t save it.');
+    const data = this.read();
+    data.oauth = { ...data.oauth, [host]: this.cipher.encrypt(JSON.stringify(token)).toString('base64') };
+    this.write(data);
+  }
+
+  clearOAuth(host: string): void {
+    const data = this.read();
+    if (!data.oauth?.[host]) return;
+    delete data.oauth[host];
+    this.write(data);
+  }
+
+  client(host: string): string | null {
+    return this.read().clients?.[host] || null;
+  }
+
+  setClient(host: string, clientId: string | null): void {
+    const data = this.read();
+    const clients = { ...data.clients };
+    if (clientId) clients[host] = clientId;
+    else delete clients[host];
+    data.clients = clients;
+    this.write(data);
+  }
 }
 
 /** A credential for one host. `username` is set when it came as a user name and password. */
@@ -97,6 +143,8 @@ export interface ForgeCredential {
   token: string;
   username: string | null;
   source: ForgeTokenSource;
+  /** ms since epoch, for a browser sign-in that expires. */
+  expiresAt?: number | null;
 }
 
 export type Exec = (command: string, args: string[], opts?: { input?: string; env?: NodeJS.ProcessEnv }) => Promise<{ code: number | null; stdout: string }>;

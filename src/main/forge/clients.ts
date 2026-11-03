@@ -1,4 +1,4 @@
-import type { ForgeCheck, ForgeCheckState, ForgeComment, ForgeKind, ForgePull, ForgePullDetail, ForgePullState } from '@shared/types';
+import type { ForgeCheck, ForgeCheckState, ForgeComment, ForgeIssue, ForgeIssueDetail, ForgeKind, ForgeMergeMethod, ForgePull, ForgePullDetail, ForgePullState } from '@shared/types';
 import type { ForgeCredential } from './accounts';
 import { apiBase } from './remote';
 
@@ -44,7 +44,16 @@ export interface ForgeClient {
   comment(path: string, number: number, body: string): Promise<void>;
   /** The end of a check's log. */
   checkLog(path: string, checkId: string): Promise<string>;
+  /** Merge it; `deleteBranch` also deletes its head branch when that's in the same repository. */
+  merge(path: string, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void>;
+  listIssues(path: string, state: 'open' | 'closed'): Promise<ForgeIssue[]>;
+  getIssue(path: string, number: number): Promise<ForgeIssueDetail>;
+  createIssue(path: string, title: string, body: string): Promise<ForgeIssue>;
+  commentIssue(path: string, number: number, body: string): Promise<void>;
 }
+
+const labelNames = (labels: Json): string[] => (Array.isArray(labels) ? labels.map((l: Json) => (typeof l === 'string' ? l : (l?.name ?? ''))).filter(Boolean) : []);
+const notBot = (c: Json) => !c.system;
 
 type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -286,6 +295,13 @@ export class GitHubClient implements ForgeClient {
       ...lineComments.map((c) => ({ id: `line:${c.id}`, author: c.user?.login ?? 'ghost', body: c.body ?? '', createdAt: time(c.created_at), path: c.path ?? null, line: c.line ?? c.original_line ?? null, url: c.html_url ?? null, review: null })),
       ...comments.map((c) => ({ id: `comment:${c.id}`, author: c.user?.login ?? 'ghost', body: c.body ?? '', createdAt: time(c.created_at), path: null, line: null, url: c.html_url ?? null, review: null })),
     ].sort(byTime);
+    const blockers: Record<string, string> = {
+      dirty: 'It has conflicts with the base branch.',
+      blocked: 'Branch protection blocks merging (required reviews or checks).',
+      behind: 'The branch is behind its base. Update it first.',
+      draft: 'It’s a draft. Mark it ready for review first.',
+    };
+    const blocker = blockers[pr.mergeable_state] ?? (pr.mergeable === false ? 'GitHub says it can’t be merged.' : null);
     return {
       ...ghPull(pr),
       body: pr.body ?? '',
@@ -294,12 +310,53 @@ export class GitHubClient implements ForgeClient {
       review: reviewVerdict(reviews.map((r) => ({ author: r.user?.login ?? '', verdict: verdict(r.state) }))),
       checkList,
       comments: all,
+      mergeable: blocker ? false : pr.mergeable ?? null,
+      mergeBlocker: blocker,
+      mergeMethods: ['merge', 'squash', 'rebase'],
+      sameRepo: Boolean(pr.head?.repo?.full_name && pr.head.repo.full_name === pr.base?.repo?.full_name),
     };
   }
 
   async createPull(path: string, req: PullCreate): Promise<ForgePull> {
     const head = req.headPath === path ? req.head : `${req.headPath.split('/')[0]}:${req.head}`;
     return ghPull(await this.http.json('POST', `/repos/${path}/pulls`, { title: req.title, body: req.body, head, base: req.base, draft: req.draft }));
+  }
+
+  async merge(path: string, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void> {
+    const pr = deleteBranch ? await this.http.get(`/repos/${path}/pulls/${number}`) : null;
+    await this.http.json('PUT', `/repos/${path}/pulls/${number}/merge`, { merge_method: method });
+    if (pr && pr.head?.repo?.full_name === pr.base?.repo?.full_name && pr.head?.ref) {
+      // The merge already happened: a branch that won't delete (protected, say) isn't worth failing over.
+      await this.http.json('DELETE', `/repos/${path}/git/refs/heads/${pr.head.ref.split('/').map(encodeURIComponent).join('/')}`).catch(() => {});
+    }
+  }
+
+  private issue(i: Json): ForgeIssue {
+    return { number: i.number, title: i.title ?? '', state: i.state === 'open' ? 'open' : 'closed', author: i.user?.login ?? '', url: i.html_url ?? '', updatedAt: time(i.updated_at), labels: labelNames(i.labels), commentCount: i.comments ?? 0 };
+  }
+
+  async listIssues(path: string, state: 'open' | 'closed'): Promise<ForgeIssue[]> {
+    const list: Json[] = await this.http.get(`/repos/${path}/issues?state=${state}&sort=updated&per_page=${LIST_LIMIT}`);
+    // GitHub lists pull requests as issues too.
+    return list.filter((i) => !i.pull_request).map((i) => this.issue(i));
+  }
+
+  async getIssue(path: string, number: number): Promise<ForgeIssueDetail> {
+    const [i, comments] = await Promise.all([this.http.get(`/repos/${path}/issues/${number}`), this.http.get<Json[]>(`/repos/${path}/issues/${number}/comments?per_page=100`).catch(() => [] as Json[])]);
+    return {
+      ...this.issue(i),
+      body: i.body ?? '',
+      assignees: (i.assignees ?? []).map((a: Json) => a.login),
+      comments: comments.map((c) => ({ id: `comment:${c.id}`, author: c.user?.login ?? 'ghost', body: c.body ?? '', createdAt: time(c.created_at), path: null, line: null, url: c.html_url ?? null, review: null })),
+    };
+  }
+
+  async createIssue(path: string, title: string, body: string): Promise<ForgeIssue> {
+    return this.issue(await this.http.json('POST', `/repos/${path}/issues`, { title, body }));
+  }
+
+  async commentIssue(path: string, number: number, body: string): Promise<void> {
+    await this.http.json('POST', `/repos/${path}/issues/${number}/comments`, { body });
   }
 
   async comment(path: string, number: number, body: string): Promise<void> {
@@ -416,6 +473,20 @@ export class GitLabClient implements ForgeClient {
       comments.push({ id: `approval:${a.user?.username}`, author: a.user?.username ?? '', body: '', createdAt: time(mr.updated_at), path: null, line: null, url: null, review: 'approved' });
     }
     comments.sort(byTime);
+    const status: string = mr.detailed_merge_status ?? (mr.merge_status === 'can_be_merged' ? 'mergeable' : mr.merge_status === 'cannot_be_merged' ? 'conflict' : 'checking');
+    const unknown = ['unchecked', 'checking', 'preparing', 'approvals_syncing'].includes(status);
+    const blockers: Record<string, string> = {
+      conflict: 'It has conflicts with the target branch.',
+      need_rebase: 'The branch needs rebasing onto its target first.',
+      draft_status: 'It’s a draft. Mark it ready first.',
+      ci_must_pass: 'The pipeline must pass first.',
+      ci_still_running: 'The pipeline is still running.',
+      discussions_not_resolved: 'Every discussion must be resolved first.',
+      not_approved: 'It needs approval first.',
+      requested_changes: 'A reviewer requested changes.',
+      not_open: 'It isn’t open.',
+    };
+    const blocker = status === 'mergeable' || unknown ? null : (blockers[status] ?? `GitLab says it can’t be merged yet (${status.replace(/_/g, ' ')}).`);
     return {
       ...glPull(mr),
       body: mr.description ?? '',
@@ -424,7 +495,44 @@ export class GitLabClient implements ForgeClient {
       review: approvals?.approved || approvals?.approved_by?.length ? 'approved' : null,
       checkList,
       comments,
+      mergeable: status === 'mergeable' ? true : unknown ? null : false,
+      mergeBlocker: blocker,
+      // Rebasing is a project setting on GitLab, not a choice per merge.
+      mergeMethods: ['merge', 'squash'],
+      sameRepo: mr.source_project_id === mr.target_project_id,
     };
+  }
+
+  async merge(path: string, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void> {
+    await this.http.json('PUT', `${this.p(path)}/merge_requests/${number}/merge`, { squash: method === 'squash', should_remove_source_branch: deleteBranch });
+  }
+
+  private issue(i: Json): ForgeIssue {
+    return { number: i.iid, title: i.title ?? '', state: i.state === 'opened' ? 'open' : 'closed', author: i.author?.username ?? '', url: i.web_url ?? '', updatedAt: time(i.updated_at), labels: labelNames(i.labels), commentCount: i.user_notes_count ?? 0 };
+  }
+
+  async listIssues(path: string, state: 'open' | 'closed'): Promise<ForgeIssue[]> {
+    const list: Json[] = await this.http.get(`${this.p(path)}/issues?state=${state === 'open' ? 'opened' : 'closed'}&order_by=updated_at&sort=desc&per_page=${LIST_LIMIT}`);
+    return list.map((i) => this.issue(i));
+  }
+
+  async getIssue(path: string, number: number): Promise<ForgeIssueDetail> {
+    const base = `${this.p(path)}/issues/${number}`;
+    const [i, notes] = await Promise.all([this.http.get(base), this.http.get<Json[]>(`${base}/notes?sort=asc&order_by=created_at&per_page=100`).catch(() => [] as Json[])]);
+    return {
+      ...this.issue(i),
+      body: i.description ?? '',
+      assignees: (i.assignees ?? []).map((a: Json) => a.username),
+      comments: notes.filter(notBot).map((n) => ({ id: `note:${n.id}`, author: n.author?.username ?? '', body: n.body ?? '', createdAt: time(n.created_at), path: null, line: null, url: i.web_url ? `${i.web_url}#note_${n.id}` : null, review: null })),
+    };
+  }
+
+  async createIssue(path: string, title: string, body: string): Promise<ForgeIssue> {
+    return this.issue(await this.http.json('POST', `${this.p(path)}/issues`, { title, description: body }));
+  }
+
+  async commentIssue(path: string, number: number, body: string): Promise<void> {
+    await this.http.json('POST', `${this.p(path)}/issues/${number}/notes`, { body });
   }
 
   async createPull(path: string, req: PullCreate): Promise<ForgePull> {
@@ -532,6 +640,7 @@ export class ForgejoClient implements ForgeClient {
       ...lineComments.map((c) => ({ id: `line:${c.id}`, author: c.user?.login ?? '', body: c.body ?? '', createdAt: time(c.created_at), path: c.path ?? null, line: c.position || c.original_position || null, url: c.html_url ?? null, review: null })),
       ...comments.map((c) => ({ id: `comment:${c.id}`, author: c.user?.login ?? '', body: c.body ?? '', createdAt: time(c.created_at), path: null, line: null, url: c.html_url ?? null, review: null })),
     ].sort(byTime);
+    const mergeable = pr.state === 'open' ? (typeof pr.mergeable === 'boolean' ? pr.mergeable : null) : false;
     return {
       ...fjPull(pr),
       body: pr.body ?? '',
@@ -540,7 +649,42 @@ export class ForgejoClient implements ForgeClient {
       review: reviewVerdict(submitted.map((r) => ({ author: r.user?.login ?? '', verdict: verdict(r.state) }))),
       checkList,
       comments: all,
+      mergeable,
+      mergeBlocker: pr.state === 'open' && mergeable === false ? 'It has conflicts, or branch protection blocks merging.' : null,
+      mergeMethods: ['merge', 'squash', 'rebase'],
+      sameRepo: Boolean(pr.head?.repo_id && pr.head.repo_id === pr.base?.repo_id) || Boolean(pr.head?.repo?.full_name && pr.head.repo.full_name === pr.base?.repo?.full_name),
     };
+  }
+
+  async merge(path: string, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void> {
+    await this.http.json('POST', `/repos/${path}/pulls/${number}/merge`, { Do: method, delete_branch_after_merge: deleteBranch });
+  }
+
+  private issue(i: Json): ForgeIssue {
+    return { number: i.number, title: i.title ?? '', state: i.state === 'open' ? 'open' : 'closed', author: i.user?.login ?? '', url: i.html_url ?? '', updatedAt: time(i.updated_at), labels: labelNames(i.labels), commentCount: i.comments ?? 0 };
+  }
+
+  async listIssues(path: string, state: 'open' | 'closed'): Promise<ForgeIssue[]> {
+    const list: Json[] = await this.http.get(`/repos/${path}/issues?state=${state}&type=issues&limit=${LIST_LIMIT}`);
+    return list.map((i) => this.issue(i)).sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async getIssue(path: string, number: number): Promise<ForgeIssueDetail> {
+    const [i, comments] = await Promise.all([this.http.get(`/repos/${path}/issues/${number}`), this.http.get<Json[]>(`/repos/${path}/issues/${number}/comments`).catch(() => [] as Json[])]);
+    return {
+      ...this.issue(i),
+      body: i.body ?? '',
+      assignees: (i.assignees ?? []).map((a: Json) => a.login),
+      comments: comments.map((c) => ({ id: `comment:${c.id}`, author: c.user?.login ?? '', body: c.body ?? '', createdAt: time(c.created_at), path: null, line: null, url: c.html_url ?? null, review: null })),
+    };
+  }
+
+  async createIssue(path: string, title: string, body: string): Promise<ForgeIssue> {
+    return this.issue(await this.http.json('POST', `/repos/${path}/issues`, { title, body }));
+  }
+
+  async commentIssue(path: string, number: number, body: string): Promise<void> {
+    await this.http.json('POST', `/repos/${path}/issues/${number}/comments`, { body });
   }
 
   async createPull(path: string, req: PullCreate): Promise<ForgePull> {

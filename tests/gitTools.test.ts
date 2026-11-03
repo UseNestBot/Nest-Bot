@@ -33,7 +33,13 @@ const PULL: ForgePullDetail = {
   headSha: 'abc',
   checkList: [{ id: 'run:11', name: 'build', state: 'failure', url: 'https://ci', hasLog: true }],
   comments: [{ id: 'line:3', author: 'rev', body: 'Off by one', createdAt: 1, path: 'src/a.ts', line: 42, url: null, review: null }],
+  mergeable: true,
+  mergeBlocker: null,
+  mergeMethods: ['merge', 'squash'],
+  sameRepo: true,
 };
+
+const ISSUE = { number: 3, title: 'It breaks', state: 'open' as const, author: 'bob', url: 'https://github.com/o/r/issues/3', updatedAt: 0, labels: ['bug'], commentCount: 1 };
 
 class FakeForge implements ForgeTools {
   calls: string[] = [];
@@ -58,6 +64,24 @@ class FakeForge implements ForgeTools {
   }
   async comment(_f: string, n: number) {
     this.calls.push(`comment ${n}`);
+  }
+  async merge(_f: string, n: number, method: string, del: boolean) {
+    this.calls.push(`merge ${n} ${method} ${del}`);
+  }
+  async listIssues(_f: string, state: string) {
+    this.calls.push(`issues ${state}`);
+    return [ISSUE];
+  }
+  async getIssue(_f: string, n: number) {
+    this.calls.push(`issue ${n}`);
+    return { ...ISSUE, body: 'Steps to reproduce', assignees: ['ann'], comments: [{ id: 'c', author: 'ann', body: 'Me too', createdAt: 1, path: null, line: null, url: null, review: null }] };
+  }
+  async createIssue() {
+    this.calls.push('create issue');
+    return ISSUE;
+  }
+  async commentIssue(_f: string, n: number) {
+    this.calls.push(`comment issue ${n}`);
   }
 }
 
@@ -121,9 +145,30 @@ describe('git tools', () => {
     expect(forge.calls).toEqual([]);
   });
 
+  it('read issues', async () => {
+    const { tools, forge, conv } = boot();
+    expect((await tools.call(conv.id, 'list_issues', {})).text).toBe('#3 It breaks [open; bug] by bob, 1 comment https://github.com/o/r/issues/3');
+    const read = (await tools.call(conv.id, 'get_issue', { number: 3 })).text;
+    expect(read).toContain('Labels: bug');
+    expect(read).toContain('Assigned to: ann');
+    expect(read).toContain('- ann: Me too');
+    expect(forge.calls).toEqual(['issues open', 'issue 3']);
+  });
+
+  it('check how to merge, then ask before merging, opening an issue or commenting on one', async () => {
+    const { tools, forge, conv } = boot();
+    expect((await tools.call(conv.id, 'merge_pull_request', { number: 7, method: 'rebase' })).text).toBe('This forge can’t rebase here. Use one of: merge, squash.');
+    expect(await tools.call(conv.id, 'merge_pull_request', { number: 7, method: 'squash', delete_branch: true })).toEqual({ ok: false, text: 'The user declined merging this pull request.' });
+    expect(await tools.call(conv.id, 'create_issue', { title: 'New' })).toEqual({ ok: false, text: 'The user declined opening this issue.' });
+    expect(await tools.call(conv.id, 'comment_on_issue', { number: 3, body: 'Hi' })).toEqual({ ok: false, text: 'The user declined posting this comment.' });
+    // Only the reads before asking reached the forge.
+    expect(forge.calls).toEqual(['get 7', 'get 7']);
+  });
+
   it('describe a pull request for the agent', () => {
     const text = describePull(PULL);
     expect(text.split('\n')[0]).toBe('#7 Fix the thing (open) by ann: fix → main');
     expect(text).toContain('Checks: failure · Review: changes-requested');
+    expect(text).toContain('Can merge (merge, squash)');
   });
 });

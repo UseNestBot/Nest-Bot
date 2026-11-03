@@ -3,7 +3,7 @@ import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { API_METHODS, type ApiMethod, type NestApi } from '@shared/ipc';
-import type { AgentDraft, AppSettings, BackupInfo, Attachment, ConversationDetail, ForgeKind, ForgePullDraft, GitScope, NestEvent, ProjectDraft, ProviderId } from '@shared/types';
+import type { AgentDraft, AppSettings, BackupInfo, Attachment, ConversationDetail, ForgeKind, ForgeMergeMethod, ForgePullDraft, GitScope, NestEvent, ProjectDraft, ProviderId } from '@shared/types';
 import { API_PROVIDERS, PROVIDERS, isProviderId, type ApiProviderId } from '@shared/types';
 import type { ApiKeyStore } from './apiKeys';
 import type { NestDb } from './db';
@@ -162,6 +162,19 @@ export function createHandlers(deps: {
     base: assertString(d?.base ?? '', 'Base branch', 250).trim(),
     draft: Boolean(d?.draft),
   });
+
+  const mergeMethod = (m: unknown): ForgeMergeMethod => {
+    if (m !== 'merge' && m !== 'squash' && m !== 'rebase') throw new UserFacingError('Unknown way to merge');
+    return m;
+  };
+  const issueState = (state: unknown): 'open' | 'closed' => (state === 'closed' ? 'closed' : 'open');
+  /** A chat (not a project) that isn't mid-turn: worktrees move its working folder. */
+  const idleChat = (scope: GitScope): string => {
+    if (scope?.kind !== 'conversation') throw new UserFacingError('Worktrees are for chats. A project’s chats can each have their own.');
+    const id = assertString(scope.id, 'id', 100);
+    if (runs.isRunning(id)) throw new UserFacingError('Wait for the current response to finish first.');
+    return id;
+  };
 
   /** Point a chat or project at a new folder (after cloning into a subfolder). */
   const relink = (scope: GitScope, folder: string) => {
@@ -456,6 +469,25 @@ export function createHandlers(deps: {
     gitLog: (scope, skip, limit) => gitCall(() => deps.git.log(gitFolder(scope), Number(skip) || 0, Number(limit) || 200)),
     gitShowCommit: (scope, hash) => gitCall(() => deps.git.showCommit(gitFolder(scope), assertString(hash, 'Commit', 64))),
     gitCommitDiff: (scope, hash, file) => gitCall(() => deps.git.commitDiff(gitFolder(scope), assertString(hash, 'Commit', 64), assertString(file, 'Path', 4000))),
+    gitCreateWorktree: (scope, branch) =>
+      gitCall(async () => {
+        idleChat(scope);
+        const target = await deps.git.createWorktree(gitFolder(scope), assertString(branch, 'Branch', 250).trim());
+        relink(scope, target);
+        return deps.git.status(target);
+      }),
+    gitRemoveWorktree: (scope, force) =>
+      gitCall(async () => {
+        const id = idleChat(scope);
+        const main = await deps.git.removeWorktree(gitFolder(scope), Boolean(force));
+        // Back to the main working tree: no folder of its own when that's where the chat would work anyway.
+        const conversation = db.getConversation(id)!;
+        const fallback = runs.workspaceFor({ ...conversation, workspace: null });
+        const same = path.relative(path.resolve(fallback), path.resolve(main)) === '';
+        const updated = db.updateConversation(id, { workspace: same ? null : main });
+        deps.broadcast({ type: 'conversation', conversation: updated });
+        return deps.git.status(main);
+      }),
     getGitInfo: () =>
       gitCall(async () => {
         deps.git.redetect(); // Settings is where someone checks after installing git
@@ -475,6 +507,15 @@ export function createHandlers(deps: {
     forgeCheckLog: (scope, checkId) => gitCall(() => deps.forge.checkLog(gitFolder(scope), assertString(checkId, 'Check', 200))),
     forgeCreatePull: (scope, draft) => gitCall(() => deps.forge.createPull(gitFolder(scope), pullDraft(draft))),
     forgeComment: (scope, number, body) => gitCall(() => deps.forge.comment(gitFolder(scope), pullNumber(number), assertString(body, 'Comment', 65_000))),
+    forgeMergePull: (scope, number, method, deleteBranch) => gitCall(() => deps.forge.merge(gitFolder(scope), pullNumber(number), mergeMethod(method), Boolean(deleteBranch))),
+    forgeListIssues: (scope, state) => gitCall(() => deps.forge.listIssues(gitFolder(scope), issueState(state))),
+    forgeGetIssue: (scope, number) => gitCall(() => deps.forge.getIssue(gitFolder(scope), pullNumber(number))),
+    forgeCreateIssue: (scope, title, body) => gitCall(() => deps.forge.createIssue(gitFolder(scope), assertString(title, 'Title', 256), assertString(body ?? '', 'Description', 65_000))),
+    forgeCommentIssue: (scope, number, body) => gitCall(() => deps.forge.commentIssue(gitFolder(scope), pullNumber(number), assertString(body, 'Comment', 65_000))),
+    forgeStartSignIn: (host) => gitCall(() => deps.forge.startSignIn(forgeHost(host))),
+    forgeCancelSignIn: (host) => gitCall(async () => deps.forge.cancelSignIn(forgeHost(host))),
+    forgeSignOut: (host) => gitCall(() => deps.forge.signOut(forgeHost(host))),
+    forgeSetOAuthClient: (host, clientId) => gitCall(() => deps.forge.setOAuthClient(forgeHost(host), clientId ? assertString(clientId, 'Client ID', 200) : null)),
 
     getSettings: () => db.getSettings(),
     getUpdateState: () => deps.updater.getState(),

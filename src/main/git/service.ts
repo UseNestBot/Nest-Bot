@@ -174,13 +174,16 @@ export class GitService {
     return this.version;
   }
 
-  /** The repository a folder is in, or null. */
-  async repoRoot(folder: string): Promise<{ root: string; gitDir: string } | null> {
+  /** The repository a folder is in, or null. `worktreeOf` is the main working tree when this is a linked worktree. */
+  async repoRoot(folder: string): Promise<{ root: string; gitDir: string; worktreeOf: string | null } | null> {
     if (!existsSync(folder)) return null;
     try {
-      const res = await this.run(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir']);
-      const [root, gitDir] = res.stdout.trim().split('\n');
-      return root && gitDir ? { root: path.normalize(root), gitDir: path.normalize(gitDir) } : null;
+      const res = await this.run(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir', '--git-common-dir']);
+      const [root, gitDir, common] = res.stdout.trim().split('\n');
+      if (!root || !gitDir) return null;
+      const commonDir = common ? path.resolve(folder, common) : gitDir;
+      const linked = sameFolder(commonDir, gitDir) ? null : path.basename(commonDir) === '.git' ? path.dirname(commonDir) : commonDir;
+      return { root: path.normalize(root), gitDir: path.normalize(gitDir), worktreeOf: linked && path.normalize(linked) };
     } catch {
       return null; // not a repository (or a bare one, which has no working tree to show)
     }
@@ -213,7 +216,7 @@ export class GitService {
     return {
       folder,
       git: { available: true, version },
-      repo: { root: repo.root, ...parsed, operation: operationIn(repo.gitDir), remotes: parseRemotes(remotes.stdout) },
+      repo: { root: repo.root, ...parsed, operation: operationIn(repo.gitDir), remotes: parseRemotes(remotes.stdout), worktreeOf: repo.worktreeOf },
     };
   }
 
@@ -385,6 +388,46 @@ export class GitService {
   }
 
   // -------------------------------------------------------------------------
+  // Worktrees
+
+  /**
+   * A new worktree on its own branch, beside the main working tree in
+   * "<repo>.worktrees/<branch>", so a chat's agent can work without touching
+   * the others'. An existing branch that isn't checked out is used as is.
+   * Returns the worktree's folder.
+   */
+  async createWorktree(folder: string, branch: string): Promise<string> {
+    const repo = await this.repoRoot(folder);
+    if (!repo) throw new GitError('This folder isn’t a git repository.');
+    const check = await this.run(repo.root, ['check-ref-format', '--branch', branch], { okCodes: [1, 128] });
+    if (check.code !== 0 || branch.startsWith('-')) throw new GitError(`“${branch}” can’t be a branch name.`);
+    const head = await this.run(repo.root, ['rev-parse', '--verify', '--quiet', 'HEAD'], { okCodes: [1] });
+    if (head.code !== 0) throw new GitError('Make a first commit before creating a worktree.');
+    const main = repo.worktreeOf ?? repo.root;
+    const target = path.join(path.dirname(main), `${path.basename(main)}.worktrees`, branch.replace(/[\\/]+/g, '-'));
+    if (existsSync(target)) throw new GitError(`There’s already a folder at ${target}.`);
+    const exists = (await this.run(repo.root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { okCodes: [1] })).code === 0;
+    await this.queued(main, () => this.run(repo.root, exists ? ['worktree', 'add', '--', target, branch] : ['worktree', 'add', '-b', branch, '--', target, 'HEAD']));
+    this.onChange(repo.root);
+    return target;
+  }
+
+  /** Remove the linked worktree `folder` is in. Returns the main working tree. Its branch is kept. */
+  async removeWorktree(folder: string, force: boolean): Promise<string> {
+    const repo = await this.repoRoot(folder);
+    if (!repo?.worktreeOf) throw new GitError('This folder isn’t a linked worktree.');
+    const main = repo.worktreeOf;
+    const res = await this.queued(main, () => this.run(main, ['worktree', 'remove', ...(force ? ['--force'] : []), '--', repo.root], { okCodes: [128] }));
+    if (res.code !== 0) {
+      if (/modified or untracked|is dirty|contains modified/i.test(res.stderr)) throw new GitError('The worktree has uncommitted changes. Commit them first, or remove it anyway to lose them.');
+      throw new GitError(friendlyGitError(res.stderr, ['worktree']));
+    }
+    this.unwatch(repo.root);
+    this.onChange(main);
+    return main;
+  }
+
+  // -------------------------------------------------------------------------
   // History
 
   /** A page of history across HEAD and every branch and tag, newest first in graph order. */
@@ -539,6 +582,15 @@ export class GitService {
     if (this.sweep) clearInterval(this.sweep);
     this.sweep = null;
   }
+}
+
+/** Whether two paths name the same folder (case-insensitively on Windows). */
+function sameFolder(a: string, b: string): boolean {
+  const key = (p: string) => {
+    const n = path.resolve(p).replace(/[\\/]+$/, '');
+    return isWindows ? n.toLowerCase() : n;
+  };
+  return key(a) === key(b);
 }
 
 function assertPath(p: string): void {
