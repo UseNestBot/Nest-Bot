@@ -40,6 +40,19 @@ export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
   'testRemoteNotification',
   'listBackups',
   'backUpNow',
+  // Git is read-only from a phone for now: status, branches and diffs only.
+  'gitInit',
+  'gitClone',
+  'gitStage',
+  'gitUnstage',
+  'gitDiscard',
+  'gitCommit',
+  'gitCheckout',
+  'gitCreateBranch',
+  'gitAddRemote',
+  'gitFetch',
+  'gitPull',
+  'gitPush',
 ]);
 
 /** Settings a paired device can't change: which programs run, and how much they may do unasked. */

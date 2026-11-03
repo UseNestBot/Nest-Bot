@@ -3,7 +3,7 @@ import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { API_METHODS, type ApiMethod, type NestApi } from '@shared/ipc';
-import type { AgentDraft, AppSettings, BackupInfo, Attachment, ConversationDetail, NestEvent, ProjectDraft, ProviderId } from '@shared/types';
+import type { AgentDraft, AppSettings, BackupInfo, Attachment, ConversationDetail, GitScope, NestEvent, ProjectDraft, ProviderId } from '@shared/types';
 import { API_PROVIDERS, PROVIDERS, isProviderId, type ApiProviderId } from '@shared/types';
 import type { ApiKeyStore } from './apiKeys';
 import type { NestDb } from './db';
@@ -15,6 +15,7 @@ import { sanitizeAccess, type ConnectorService } from './connectors';
 import type { ModelStore } from './models';
 import type { Updater } from './updater';
 import type { RemoteHost } from './remote/host';
+import { GitError, type GitService } from './git/service';
 import { sanitizePermissions, sanitizeSettings } from './settings';
 import { UserFacingError } from './runs';
 
@@ -109,11 +110,51 @@ export function createHandlers(deps: {
   apiKeys: ApiKeyStore;
   updater: Updater;
   remote: RemoteHost;
+  git: GitService;
 }): Handlers {
   const { db, runs, providers } = deps;
   const assertApiProvider = (p: unknown): ApiProviderId => {
     if (!(API_PROVIDERS as unknown[]).includes(p)) throw new UserFacingError('Unknown API provider');
     return p as ApiProviderId;
+  };
+
+  /** The working folder a chat or project's git calls act on. */
+  const gitFolder = (scope: GitScope): string => {
+    const id = assertString(scope?.id, 'id', 100);
+    if (scope.kind === 'conversation') {
+      const conversation = db.getConversation(id);
+      if (!conversation) throw new UserFacingError('That conversation no longer exists.');
+      return runs.workspaceFor(conversation);
+    }
+    if (scope.kind === 'project') {
+      const project = db.getProject(id);
+      if (!project) throw new UserFacingError('Project not found');
+      return project.workspace ?? deps.defaultWorkspace();
+    }
+    throw new UserFacingError('Unknown git scope');
+  };
+  const gitCall = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof GitError) throw new UserFacingError(err.message);
+      throw err;
+    }
+  };
+  const gitPaths = (paths: unknown): string[] => {
+    if (!Array.isArray(paths) || !paths.length) throw new UserFacingError('Pick at least one file.');
+    return paths.slice(0, 5000).map((p) => assertString(p, 'Path', 4000));
+  };
+  /** Point a chat or project at a new folder (after cloning into a subfolder). */
+  const relink = (scope: GitScope, folder: string) => {
+    if (scope.kind === 'conversation') {
+      const conversation = db.updateConversation(scope.id, { workspace: folder });
+      deps.broadcast({ type: 'conversation', conversation });
+    } else {
+      const project = db.getProject(scope.id)!;
+      db.updateProject(scope.id, { name: project.name, brief: project.brief, color: project.color, workspace: folder });
+      deps.broadcast({ type: 'projects-changed' });
+    }
   };
 
   const remoteCall = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -366,6 +407,35 @@ export function createHandlers(deps: {
         counts: db.stats(),
       };
     },
+    gitStatus: (scope) => gitCall(() => deps.git.status(gitFolder(scope))),
+    gitBranches: (scope) => gitCall(() => deps.git.branches(gitFolder(scope))),
+    gitDiff: (scope, file, staged) => gitCall(() => deps.git.diff(gitFolder(scope), assertString(file, 'Path', 4000), Boolean(staged))),
+    gitInit: (scope) =>
+      gitCall(async () => {
+        const folder = gitFolder(scope);
+        mkdirSync(folder, { recursive: true });
+        await deps.git.init(folder);
+        return deps.git.status(folder);
+      }),
+    gitClone: (scope, url) =>
+      gitCall(async () => {
+        const folder = gitFolder(scope);
+        if (scope.kind === 'conversation' && runs.isRunning(scope.id)) throw new UserFacingError('Wait for the current response to finish before cloning here.');
+        const target = await deps.git.clone(folder, assertString(url, 'URL', 2000).trim());
+        if (target !== folder) relink(scope, target);
+        return deps.git.status(target);
+      }),
+    gitStage: (scope, paths) => gitCall(() => deps.git.stage(gitFolder(scope), gitPaths(paths))),
+    gitUnstage: (scope, paths) => gitCall(() => deps.git.unstage(gitFolder(scope), gitPaths(paths))),
+    gitDiscard: (scope, paths) => gitCall(() => deps.git.discard(gitFolder(scope), gitPaths(paths))),
+    gitCommit: (scope, message, all) => gitCall(() => deps.git.commit(gitFolder(scope), assertString(message, 'Commit message', 20_000), Boolean(all))),
+    gitCheckout: (scope, branch) => gitCall(() => deps.git.checkout(gitFolder(scope), assertString(branch, 'Branch', 250))),
+    gitCreateBranch: (scope, name) => gitCall(() => deps.git.createBranch(gitFolder(scope), assertString(name, 'Branch', 250).trim())),
+    gitAddRemote: (scope, name, url) => gitCall(() => deps.git.addRemote(gitFolder(scope), assertString(name, 'Remote name', 64).trim(), assertString(url, 'URL', 2000).trim())),
+    gitFetch: (scope) => gitCall(() => deps.git.fetch(gitFolder(scope))),
+    gitPull: (scope) => gitCall(() => deps.git.pull(gitFolder(scope))),
+    gitPush: (scope) => gitCall(() => deps.git.push(gitFolder(scope))),
+
     getSettings: () => db.getSettings(),
     getUpdateState: () => deps.updater.getState(),
     checkForUpdates: () => deps.updater.check(),

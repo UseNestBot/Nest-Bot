@@ -16,6 +16,10 @@ import type {
   Attachment,
   Conversation,
   ConversationDetail,
+  GitBranch,
+  GitDiff,
+  GitScope,
+  GitStatus,
   Handoff,
   InboxItem,
   LoginStart,
@@ -154,6 +158,36 @@ export interface NestApi {
   /** Snapshot the database now, then list the snapshots. */
   backUpNow(): Promise<BackupInfo[]>;
 
+  // Git, in a chat's or project's working folder. Paired devices may only read.
+  /** The folder's repository, or null repo when it isn't one (and whether git is installed at all). */
+  gitStatus(scope: GitScope): Promise<GitStatus>;
+  gitBranches(scope: GitScope): Promise<GitBranch[]>;
+  /** One changed file's diff: staged, or working tree (untracked files show as all added). */
+  gitDiff(scope: GitScope, path: string, staged: boolean): Promise<GitDiff>;
+  /** Make the working folder a repository. */
+  gitInit(scope: GitScope): Promise<GitStatus>;
+  /**
+   * Clone into the working folder when it's empty, otherwise into a new folder
+   * inside it that then becomes the chat's or project's folder.
+   */
+  gitClone(scope: GitScope, url: string): Promise<GitStatus>;
+  gitStage(scope: GitScope, paths: string[]): Promise<void>;
+  gitUnstage(scope: GitScope, paths: string[]): Promise<void>;
+  /** Throw away unstaged changes to these paths; untracked ones are deleted. */
+  gitDiscard(scope: GitScope, paths: string[]): Promise<void>;
+  /** Commit what's staged, or everything with `all`. Returns the short hash. */
+  gitCommit(scope: GitScope, message: string, all: boolean): Promise<string>;
+  /** Switch branch; a remote branch checks out as a local branch tracking it. */
+  gitCheckout(scope: GitScope, branch: string): Promise<void>;
+  /** Create a branch from HEAD and switch to it. */
+  gitCreateBranch(scope: GitScope, name: string): Promise<void>;
+  gitAddRemote(scope: GitScope, name: string, url: string): Promise<void>;
+  gitFetch(scope: GitScope): Promise<void>;
+  /** Fast-forward only. */
+  gitPull(scope: GitScope): Promise<void>;
+  /** Push the current branch, setting its upstream the first time. */
+  gitPush(scope: GitScope): Promise<void>;
+
   // Updates (GitHub releases, installed silently by the NSIS installer)
   getUpdateState(): Promise<UpdateState>;
   checkForUpdates(): Promise<UpdateState>;
@@ -242,6 +276,21 @@ export const API_METHODS = [
   'updateSettings',
   'listBackups',
   'backUpNow',
+  'gitStatus',
+  'gitBranches',
+  'gitDiff',
+  'gitInit',
+  'gitClone',
+  'gitStage',
+  'gitUnstage',
+  'gitDiscard',
+  'gitCommit',
+  'gitCheckout',
+  'gitCreateBranch',
+  'gitAddRemote',
+  'gitFetch',
+  'gitPull',
+  'gitPush',
   'getUpdateState',
   'checkForUpdates',
   'installUpdate',
