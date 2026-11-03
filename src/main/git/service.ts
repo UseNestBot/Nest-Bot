@@ -244,7 +244,7 @@ export class GitService {
 
   async init(folder: string): Promise<void> {
     const repo = await this.repoRoot(folder);
-    if (repo && path.relative(realpathSync(repo.root), realpathSync(folder)) === '') throw new GitError('This folder is already a git repository.');
+    if (repo && path.relative(realpathSync.native(repo.root), realpathSync.native(folder)) === '') throw new GitError('This folder is already a git repository.');
     const configured = await this.run(folder, ['config', '--get', 'init.defaultBranch'], { okCodes: [1] }).catch(() => null);
     const branch = configured?.stdout.trim() || 'main';
     await this.run(folder, ['init', `--initial-branch=${branch}`]);
