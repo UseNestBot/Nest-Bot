@@ -76,7 +76,8 @@ describe('git parsing', () => {
 });
 
 describe.skipIf(!findGit())('GitService', () => {
-  const base = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'nest-git-')));
+  // .native expands Windows 8.3 names (RUNNER~1) to the long form git reports.
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), 'nest-git-')));
   const changes: string[] = [];
   const git = new GitService((root) => changes.push(root));
   const saved = { ...process.env };
