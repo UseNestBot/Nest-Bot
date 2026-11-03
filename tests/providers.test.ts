@@ -146,7 +146,9 @@ describe('ACP providers (Cursor, Gemini CLI, Grok CLI)', () => {
     expect(approval.choices.map((c) => c.id)).toEqual(['allow', 'deny', 'deny-stop']);
     runs.respondApproval(approval.id, 'allow');
     expect((await finished(db, runId)).status).toBe('completed');
-    expect(lastAssistant(db, conv.id).content).toBe('Running it.\n\nOutput: hi');
+    // Text before the tool is a note between steps; the reply is what came after.
+    expect(lastAssistant(db, conv.id).content).toBe('Output: hi');
+    expect(db.listActivities(conv.id).find((a) => a.kind === 'note')?.detail).toBe('Running it.');
     const activity = db.listActivities(conv.id).find((a) => a.id === 't1');
     expect(activity).toMatchObject({ kind: 'command', status: 'done', detail: 'echo hi' });
     expect(activity?.output).toContain('hi');

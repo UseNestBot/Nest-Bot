@@ -141,6 +141,38 @@ for (const provider of ['claude', 'codex'] as ProviderId[]) {
       expect((await finished(a.db, next.runId)).status).toBe('completed');
     });
 
+    it('keeps text written before a step as a note, and only the closing text as the reply', async () => {
+      const a = boot();
+      const conv = a.db.createConversation(makeAgent(a.db, provider));
+      const { runId } = await a.runs.send(conv.id, 'go [narrate]', []);
+      expect((await finished(a.db, runId)).status).toBe('completed');
+      expect(assistantFor(a.db, conv.id, runId)).toMatchObject({ status: 'complete', content: 'Found a.txt.' });
+      const timeline = a.db.listActivities(conv.id).filter((x) => x.runId === runId && x.kind !== 'context' && x.kind !== 'info');
+      expect(timeline.map((x) => x.kind)).toEqual(['note', 'command']);
+      expect(timeline[0]).toMatchObject({ title: 'Let me check.', detail: 'Let me check.', status: 'done' });
+      // The streamed copy of the reply never ends up holding the note.
+      const streamed = a.events.filter((e) => e.type === 'message' && e.message.runId === runId).map((e) => (e.type === 'message' ? e.message.content : ''));
+      expect(streamed[streamed.length - 1]).toBe('Found a.txt.');
+    });
+
+    it('stores step input, adding the exit code from the result without losing the command', async () => {
+      const a = boot();
+      const conv = a.db.createConversation(makeAgent(a.db, provider));
+      const { runId } = await a.runs.send(conv.id, 'go [narrate]', []);
+      await finished(a.db, runId);
+      const step = a.db.listActivities(conv.id).find((x) => x.runId === runId && x.kind === 'command');
+      expect(step?.meta).toMatchObject({ command: 'ls', ...(provider === 'codex' ? { cwd: '/w', exitCode: 0 } : {}) });
+    });
+
+    it('a reply that ends on a step keeps its last note as the answer', async () => {
+      const a = boot();
+      const conv = a.db.createConversation(makeAgent(a.db, provider));
+      const { runId } = await a.runs.send(conv.id, 'go [narrate] [ends-on-step]', []);
+      expect((await finished(a.db, runId)).status).toBe('completed');
+      expect(assistantFor(a.db, conv.id, runId).content).toBe('Let me check.');
+      expect(a.db.listActivities(conv.id).filter((x) => x.runId === runId && x.kind === 'note')).toHaveLength(1);
+    });
+
     it('steering an idle conversation just sends the message', async () => {
       const a = boot();
       const conv = a.db.createConversation(makeAgent(a.db, provider));

@@ -749,8 +749,8 @@ function Conversations() {
         </Row>
       </Group>
       <Group title="Transcript">
-        <Row label="Expand Activity by default" description="Show each reply’s commands, file edits and tool calls without clicking Activity.">
-          <Toggle checked={s.expandActivity} onChange={(expandActivity) => void updateSettings({ expandActivity })} label="Expand activity" />
+        <Row label="Show the agent’s work by default" description="Keep each finished reply’s steps and notes open, instead of folded into “Worked for…” above the answer.">
+          <Toggle checked={s.expandActivity} onChange={(expandActivity) => void updateSettings({ expandActivity })} label="Show the agent’s work" />
         </Row>
         <Row label="Show token usage" description="Tokens the provider reported for each reply. Nest doesn’t show cost estimates for subscription usage.">
           <Toggle checked={s.showUsage} onChange={(showUsage) => void updateSettings({ showUsage })} label="Show token usage" />

@@ -5,7 +5,7 @@ import { PROVIDER_LABEL } from '@shared/types';
 import { api, IS_REMOTE } from '../api';
 import { useStore } from '../store';
 import { compactNumber, duration, stampTime, statusLabel } from '../format';
-import { ActivityGroup, ApprovalCard } from './Activity';
+import { ApprovalCard, RunTimeline } from './Activity';
 import { Avatar } from './Avatar';
 import { BrowserViewport } from './BrowserViewport';
 import { Composer } from './Composer';
@@ -412,6 +412,9 @@ function MessageView({ message, run, detail, onRemember }: { message: Message; r
   const activities = run ? detail.activities.filter((a) => a.runId === run.id && a.createdAt >= from && a.createdAt < until) : [];
   const approvals = run && until === Infinity ? detail.approvals.filter((a) => a.runId === run.id && a.status === 'pending') : [];
   const streaming = message.status === 'streaming';
+  const startedAt = index > 0 ? message.createdAt : run?.startedAt;
+  const endedAt = until !== Infinity ? until : run?.endedAt;
+  const elapsed = startedAt && endedAt ? duration(endedAt - startedAt) : null;
   const usage = run?.usage;
   // Run facts live in a tooltip so the transcript stays as clean as a chat thread.
   const info = [
@@ -426,7 +429,7 @@ function MessageView({ message, run, detail, onRemember }: { message: Message; r
     <div className="flex flex-col items-start">
       {activities.length > 0 && (
         <div className="w-full pl-1">
-          <ActivityGroup activities={activities} running={streaming} defaultOpen={state.settings.expandActivity} />
+          <RunTimeline activities={activities} running={streaming} answer={message.content} elapsed={elapsed} defaultOpen={state.settings.expandActivity} />
         </div>
       )}
       {approvals.map((a) => (

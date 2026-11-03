@@ -75,6 +75,23 @@ async function handleUser(prompt) {
     setTimeout(() => result('done'), 60);
     return;
   }
+  if (prompt.includes('[narrate]')) {
+    // Text before a tool is a note on the way; the text after the last tool is the answer.
+    out({ type: 'stream_event', event: { type: 'message_start', message: { id: 'n1' } }, session_id: sessionId, parent_tool_use_id: null });
+    out({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, session_id: sessionId, parent_tool_use_id: null });
+    out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Let me check.' } }, session_id: sessionId, parent_tool_use_id: null });
+    out({ type: 'assistant', message: { id: 'n1', content: [{ type: 'text', text: 'Let me check.' }, { type: 'tool_use', id: 'tu-n', name: 'Bash', input: { command: 'ls' } }] }, session_id: sessionId, parent_tool_use_id: null });
+    out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu-n', content: 'a.txt', is_error: false }] }, session_id: sessionId, parent_tool_use_id: null });
+    if (prompt.includes('[ends-on-step]')) {
+      out({ type: 'assistant', message: { id: 'n2', content: [{ type: 'tool_use', id: 'tu-n2', name: 'Bash', input: { command: 'pwd' } }] }, session_id: sessionId, parent_tool_use_id: null });
+      out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu-n2', content: '/w', is_error: false }] }, session_id: sessionId, parent_tool_use_id: null });
+      setTimeout(() => result('done'), 20);
+      return;
+    }
+    assistantText('n2', 'Found a.txt.');
+    setTimeout(() => result('done'), 60);
+    return;
+  }
   if (prompt.includes('[steerable]')) {
     // A tool runs; a message sent meanwhile is echoed back (--replay-user-messages) and answered in the same turn.
     out({ type: 'assistant', message: { id: 's1', content: [{ type: 'text', text: 'working on it' }, { type: 'tool_use', id: 'tu-s', name: 'Bash', input: { command: 'sleep 1' } }] }, session_id: sessionId, parent_tool_use_id: null });

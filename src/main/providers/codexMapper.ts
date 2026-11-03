@@ -1,4 +1,4 @@
-import type { ActivityStatus, ApprovalChoice, RateLimitWindow } from '@shared/types';
+import type { ActivityStatus, ApprovalChoice, FileEdit, RateLimitWindow } from '@shared/types';
 import { isObject } from './claudeMapper';
 import { truncate, type ProviderEvent } from './types';
 
@@ -87,6 +87,7 @@ export class CodexTurnMapper {
             id,
             kind: 'command',
             title: String(item.command ?? 'command').split('\n')[0].slice(0, 200),
+            meta: { command: truncate(String(item.command ?? ''), 6000), ...(typeof item.cwd === 'string' ? { cwd: item.cwd } : {}), ...(exit !== null ? { exitCode: exit } : {}) },
             detail: [typeof item.cwd === 'string' ? `in ${item.cwd}` : null, exit !== null ? `exit code ${exit}` : null].filter(Boolean).join(' · ') || null,
             output: output ? truncate(output, 6000) : null,
             status: completed && exit !== null && exit !== 0 && status === 'done' ? 'failed' : status,
@@ -103,6 +104,7 @@ export class CodexTurnMapper {
             id,
             kind: 'file',
             title: paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length} files`,
+            meta: { edits: changes.map((c) => codexEdit(c)) },
             detail: truncate(changes.map((c) => `${String(c.path)}\n${String(c.diff ?? '')}`).join('\n\n'), 6000),
             status,
           },
@@ -328,4 +330,14 @@ export function codexRateLimitWindows(snapshot: unknown): { windows: RateLimitWi
   }
   const limited = snapshot.rateLimitReachedType !== null && snapshot.rateLimitReachedType !== undefined;
   return { windows, limited, plan: typeof snapshot.planType === 'string' ? snapshot.planType : null };
+}
+
+/** A Codex file change: updates carry a unified diff, while an added or deleted file carries its content. */
+function codexEdit(change: Record<string, unknown>): FileEdit {
+  const path = String(change.path ?? '');
+  const diff = truncate(String(change.diff ?? ''), 8000);
+  const kind = isObject(change.kind) ? change.kind.type : change.kind;
+  if (kind === 'add') return { path, before: '', after: diff };
+  if (kind === 'delete') return { path, before: diff, after: '' };
+  return { path, diff };
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import type { ActivityKind, ActivityStatus, Attachment, Conversation, Handoff, Message, NestEvent, ProviderId, ProviderStatus, RateLimitWindow, Run, Usage } from '@shared/types';
+import type { ActivityKind, ActivityMeta, ActivityStatus, Attachment, Conversation, Handoff, Message, NestEvent, ProviderId, ProviderStatus, RateLimitWindow, Run, Usage } from '@shared/types';
 import { PROVIDER_LABEL, effectivePermissions, resolveSkip } from '@shared/types';
 import type { HandoffRequest } from '@shared/ipc';
 import type { NestDb } from './db';
@@ -228,6 +228,14 @@ export class RunManager {
     let order: string[] = [];
     /** Text segments that belong to a reply before a steering message; late updates to them are dropped. */
     const retired = new Set<string>();
+    /**
+     * Text followed by a step is a note on the way, not the answer: it is kept as a `note` activity
+     * between the steps around it, and the reply holds only the text after the last step.
+     */
+    let noted = new Set<string>();
+    let lastNote: string | null = null;
+    /** Provider activity ids seen this run, so only a newly started step turns earlier text into notes. */
+    const seenActivities = new Set<string>();
     let content = '';
     let lastError: string | null = null;
     let sessionMissing = false;
@@ -251,13 +259,39 @@ export class RunManager {
       }
       if (!flushTimer) flushTimer = setTimeout(() => flush(), 400);
     };
+    const joinContent = () => order.filter((k) => !noted.has(k)).map((k) => segments.get(k) ?? '').filter((t) => t.trim()).join('\n\n');
+    const noteActivity = (id: string, text: string) => {
+      const trimmed = text.trim();
+      this.activity(conversation.id, run.id, { id: `note-${id}`, kind: 'note', title: trimmed.split('\n')[0].slice(0, 200), detail: trimmed, status: 'done' });
+    };
     const setSegment = (id: string, text: string) => {
       if (retired.has(id)) return;
       if (!segments.has(id)) order.push(id);
       segments.set(id, text);
-      content = order.map((k) => segments.get(k) ?? '').filter((t) => t.trim()).join('\n\n');
+      if (noted.has(id)) {
+        // A late full-text update to text that already became a note.
+        if (text.trim()) noteActivity(id, text);
+        return;
+      }
+      content = joinContent();
       scheduleFlush();
     };
+    /** Moves the reply text so far into notes, placed before the step that is starting. */
+    const noteReplyText = () => {
+      const pending = order.filter((k) => !noted.has(k) && (segments.get(k) ?? '').trim());
+      if (!pending.length) return;
+      for (const id of pending) {
+        noteActivity(id, segments.get(id)!);
+        noted.add(id);
+        lastNote = segments.get(id)!.trim();
+      }
+      content = joinContent();
+      this.db.updateMessage(assistant.id, { content });
+      lastBroadcast = Date.now();
+      this.broadcast({ type: 'message', message: { ...assistant, content, status: 'streaming' } });
+    };
+    /** A reply that ends on a step has no closing text; its last note stands as the answer. */
+    const closingContent = () => content.trim() ? content : (lastNote ?? content);
 
     const onEvent = (event: ProviderEvent) => {
       switch (event.type) {
@@ -273,6 +307,10 @@ export class RunManager {
           setSegment(event.segmentId, event.text);
           break;
         case 'activity':
+          if (!seenActivities.has(event.id)) {
+            seenActivities.add(event.id);
+            if (event.kind !== 'info' && event.kind !== 'context') noteReplyText();
+          }
           this.activity(conversation.id, run.id, event);
           break;
         case 'approval-request': {
@@ -347,6 +385,7 @@ export class RunManager {
         return;
       }
       const messageStatus = status === 'completed' ? 'complete' : status === 'interrupted' ? 'interrupted' : 'error';
+      if (status === 'completed') content = closingContent();
       const msg = this.db.updateMessage(assistant.id, {
         content,
         status: messageStatus,
@@ -385,7 +424,7 @@ export class RunManager {
       if (!(await handle.steer(composePrompt([text, attachmentsNote(attachments)]), attachments))) return false;
       if (this.active.get(conversation.id) !== active) return false;
       flush(true);
-      this.broadcast({ type: 'message', message: this.db.updateMessage(assistant.id, { content, status: 'complete' }) });
+      this.broadcast({ type: 'message', message: this.db.updateMessage(assistant.id, { content: closingContent(), status: 'complete' }) });
       const steerMessage = this.db.insertMessage({
         conversationId: conversation.id,
         runId: null,
@@ -401,6 +440,8 @@ export class RunManager {
       for (const id of order) retired.add(id);
       segments = new Map();
       order = [];
+      noted = new Set();
+      lastNote = null;
       content = '';
       assistant = newReply();
       return true;
@@ -463,7 +504,7 @@ export class RunManager {
     return finalRun;
   }
 
-  private activity(conversationId: string, runId: string, a: { id: string; kind: ActivityKind; title?: string; detail?: string | null; output?: string | null; status: ActivityStatus }): void {
+  private activity(conversationId: string, runId: string, a: { id: string; kind: ActivityKind; title?: string; detail?: string | null; output?: string | null; meta?: ActivityMeta; status: ActivityStatus }): void {
     const activity = this.db.upsertActivity(conversationId, { ...a, runId });
     this.broadcast({ type: 'activity', activity, conversationId });
   }

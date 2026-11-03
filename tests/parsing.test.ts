@@ -52,6 +52,25 @@ describe('ClaudeStreamMapper', () => {
     expect(ev.at(-1)).toEqual({ type: 'text-final', segmentId: 'msg1:0', text: 'Hi there' });
   });
 
+  it('keeps the full command and file edits for the step view', () => {
+    const m = new ClaudeStreamMapper();
+    const long = `npm run build -- ${'--flag '.repeat(40)}`.trim();
+    const ev = m.map({
+      type: 'assistant',
+      message: {
+        id: 'a',
+        content: [
+          { type: 'tool_use', id: 't1', name: 'Bash', input: { command: long, description: 'Build it' } },
+          { type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: '/w/a.ts', old_string: 'x = 1', new_string: 'x = 2' } },
+          { type: 'tool_use', id: 't3', name: 'MultiEdit', input: { file_path: '/w/b.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] } },
+        ],
+      },
+    });
+    expect(ev[0]).toMatchObject({ title: long.slice(0, 160), meta: { command: long, description: 'Build it' } });
+    expect(ev[1]).toMatchObject({ kind: 'file', meta: { path: '/w/a.ts', edits: [{ path: '/w/a.ts', before: 'x = 1', after: 'x = 2' }] } });
+    expect(ev[2]).toMatchObject({ meta: { edits: [{ before: 'a', after: 'b' }, { before: 'c', after: 'd' }] } });
+  });
+
   it('turns tool use and results into one activity and never surfaces subagent text', () => {
     const m = new ClaudeStreamMapper();
     const start = m.map({ type: 'assistant', message: { id: 'a', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls -la\necho 2' } }] } });
@@ -127,8 +146,8 @@ describe('CodexTurnMapper', () => {
     expect(ev[0]).toEqual({ type: 'text-delta', segmentId: 'a1', text: 'He' });
     expect(ev[1]).toEqual({ type: 'text-final', segmentId: 'a1', text: 'Hello' });
     const cmdDone = ev.filter((e) => e.type === 'activity' && e.id === 'c1').at(-1);
-    expect(cmdDone).toMatchObject({ status: 'failed', output: 'FAIL' }); // non-zero exit
-    expect(ev.find((e) => e.type === 'activity' && e.id === 'f1')).toMatchObject({ kind: 'file', title: 'Edit a.ts' });
+    expect(cmdDone).toMatchObject({ status: 'failed', output: 'FAIL', meta: { command: 'npm test', cwd: '/w', exitCode: 1 } }); // non-zero exit
+    expect(ev.find((e) => e.type === 'activity' && e.id === 'f1')).toMatchObject({ kind: 'file', title: 'Edit a.ts', meta: { edits: [{ path: 'a.ts', diff: '+x' }] } });
     expect(ev.find((e) => e.type === 'usage')).toEqual({ type: 'usage', usage: { inputTokens: 9, cachedInputTokens: 4, outputTokens: 2, contextWindow: 100 } });
     // Reasoning is never surfaced.
     expect(JSON.stringify(ev)).not.toContain('secret');
