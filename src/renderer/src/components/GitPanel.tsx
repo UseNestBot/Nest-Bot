@@ -1,24 +1,38 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Check, ChevronDown, CloudDownload, FolderGit2, GitBranch, Loader2, Minus, PanelRightClose, Plus, RefreshCw, Undo2, Upload } from 'lucide-react';
-import type { GitBranch as Branch, GitChange, GitDiff, GitFileChange, GitScope, GitStatus } from '@shared/types';
+import { ArrowDown, ArrowUp, Check, ChevronDown, CloudDownload, FolderGit2, FolderMinus, GitBranch, Loader2, Minus, PanelRightClose, Plus, RefreshCw, Sparkles, Undo2, Upload } from 'lucide-react';
+import type { GitBranch as Branch, GitDiff, GitFileChange, GitScope, GitStatus } from '@shared/types';
 import { api, IS_REMOTE } from '../api';
 import { useStore } from '../store';
 import { confirmDialog } from './confirm';
-import { Button, EmptyState, Field, IconButton, MenuItem, MenuLabel, Modal, Popover, Tooltip, cx, inputClass } from './ui';
+import { GitHistory } from './GitHistory';
+import { GitIssues } from './GitIssues';
+import { CreatePullDialog, CurrentPull, GitPulls, PullDialog, useChatAgent, useForge } from './GitPulls';
+import { commitPrompt, onGitDraft, useGitDraft } from './gitDrafts';
+import { DiffText, LETTER, TONE } from './gitUi';
+import { Button, EmptyState, Field, IconButton, MenuItem, MenuLabel, Modal, Popover, Segmented, Tooltip, cx, inputClass } from './ui';
 
 /** Conversations whose git panel is open, kept across pane switches for this session. */
 const openPanels = new Set<string>();
 
 export function useGitPanel(conversationId: string): [boolean, (open: boolean) => void] {
   const [open, setOpen] = useState(() => openPanels.has(conversationId));
+  const set = useCallback(
+    (v: boolean) => {
+      if (v) openPanels.add(conversationId);
+      else openPanels.delete(conversationId);
+      setOpen(v);
+    },
+    [conversationId],
+  );
   useEffect(() => setOpen(openPanels.has(conversationId)), [conversationId]);
-  const set = (v: boolean) => {
-    if (v) openPanels.add(conversationId);
-    else openPanels.delete(conversationId);
-    setOpen(v);
-  };
+  // The agent drafted a commit message or pull request: show it.
+  useEffect(() => onGitDraft(conversationId, () => set(true)), [conversationId, set]);
   return [open, set];
 }
+
+type Tab = 'changes' | 'history' | 'pulls' | 'issues';
+/** Each scope's last tab, for this session. */
+const tabs = new Map<string, Tab>();
 
 /** A chat's repository beside the transcript. */
 export function GitPanel({ scope, floating, titlebar = true, onClose }: { scope: GitScope; floating?: boolean; titlebar?: boolean; onClose: () => void }) {
@@ -212,8 +226,6 @@ function CloneDialog({ scope, onClose, onDone }: { scope: GitScope; onClose: () 
 // ---------------------------------------------------------------------------
 // A repository
 
-const LETTER: Record<GitChange, string> = { modified: 'M', typechange: 'T', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', untracked: 'U', conflicted: '!' };
-const TONE: Record<GitChange, string> = { modified: 'text-warn', typechange: 'text-warn', added: 'text-ok', untracked: 'text-ok', deleted: 'text-bad', renamed: 'text-accent', copied: 'text-accent', conflicted: 'text-bad' };
 
 function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitStatus; repo: NonNullable<GitStatus['repo']>; refresh: () => void }) {
   const { attempt } = useStore();
@@ -221,7 +233,38 @@ function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitSt
   const [message, setMessage] = useState('');
   const [diff, setDiff] = useState<{ file: GitFileChange; staged: boolean } | null>(null);
   const [remoteOpen, setRemoteOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [pullOpen, setPullOpen] = useState<number | null>(null);
+  const [asked, setAsked] = useState(false);
+  const tabKey = `${scope.kind}:${scope.id}`;
+  const [tab, setTabState] = useState<Tab>(() => tabs.get(tabKey) ?? 'changes');
+  const setTab = (t: Tab) => {
+    tabs.set(tabKey, t);
+    setTabState(t);
+  };
   const readOnly = IS_REMOTE;
+  const agent = useChatAgent(scope);
+  const forge = useForge(scope, repo);
+  const chatId = scope.kind === 'conversation' ? scope.id : null;
+  const [commitDraft, clearCommitDraft] = useGitDraft(chatId, 'commit');
+  const [pullDraft] = useGitDraft(chatId, 'pull-request');
+
+  // The agent's commit message goes in the box, for the user to read before committing.
+  useEffect(() => {
+    if (!commitDraft) return;
+    setMessage(commitDraft.message);
+    setAsked(false);
+    setTabState('changes');
+    clearCommitDraft();
+  }, [commitDraft]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Its pull request opens the form, which picks the draft up.
+  useEffect(() => {
+    if (pullDraft && forge.lookup?.repo?.account.state === 'ready' && !readOnly) setCreateOpen(true);
+  }, [pullDraft, forge.lookup, readOnly]);
+  // Stop showing "writing…" once the agent's turn ends, drafted or not.
+  useEffect(() => {
+    if (!agent?.busy) setAsked(false);
+  }, [agent?.busy]);
 
   const act = async (what: string, fn: () => Promise<unknown>) => {
     setBusy(what);
@@ -234,11 +277,15 @@ function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitSt
   const staged = repo.files.filter((f) => f.staged && f.staged !== 'conflicted');
   const unstaged = repo.files.filter((f) => f.unstaged);
   const commitAll = staged.length === 0;
-  const canCommit = Boolean(message.trim()) && (staged.length > 0 || unstaged.length > 0) && !busy && !repo.operation;
+  const hasChanges = staged.length > 0 || unstaged.length > 0;
+  const canCommit = Boolean(message.trim()) && hasChanges && !busy && !repo.operation;
   const commit = async () => {
     if (!canCommit) return;
     const hash = await act('commit', () => api.gitCommit(scope, message, commitAll));
     if (hash) setMessage('');
+  };
+  const writeMessage = async () => {
+    if (agent && (await agent.send(commitPrompt(!commitAll)))) setAsked(true);
   };
   const discard = async (files: GitFileChange[]) => {
     const untracked = files.some((f) => f.unstaged === 'untracked');
@@ -294,6 +341,7 @@ function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitSt
           The working folder is inside the repository at <span className="break-all font-mono text-[11px] text-ink-2">{repo.root}</span>.
         </p>
       )}
+      {repo.worktreeOf && <WorktreeNote scope={scope} repo={repo} onDone={refresh} />}
       {repo.operation && (
         <div className="rounded-xl border border-warn-line bg-warn-bg px-3 py-2 text-[12.5px] text-warn-ink">
           A {repo.operation} is in progress. Finish or abort it in the terminal (git {repo.operation} --continue or --abort).
@@ -310,71 +358,170 @@ function Repo({ scope, status, repo, refresh }: { scope: GitScope; status: GitSt
         </div>
       )}
 
-      {!readOnly && (
-        <div>
-          <textarea
-            className={cx(inputClass, 'min-h-[64px] resize-y font-[inherit]')}
-            placeholder={repo.branch ? `Message (commit on ${repo.branch})` : 'Commit message'}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                void commit();
-              }
-            }}
-          />
-          <Button variant="primary" className="mt-2 w-full" disabled={!canCommit} onClick={() => void commit()}>
-            {busy === 'commit' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            {commitAll && unstaged.length > 0 ? `Commit all ${unstaged.length} change${unstaged.length === 1 ? '' : 's'}` : 'Commit'}
-          </Button>
-        </div>
-      )}
+      <Segmented
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: 'changes', label: hasChanges ? `Changes ${repo.files.length}${repo.truncated ? '+' : ''}` : 'Changes' },
+          { value: 'history', label: 'History' },
+          { value: 'pulls', label: forge.lookup?.repo?.kind === 'gitlab' ? 'MRs' : 'PRs' },
+          { value: 'issues', label: 'Issues' },
+        ]}
+      />
 
-      {repo.files.length === 0 ? (
-        <p className="py-4 text-center text-[13px] text-muted">{repo.head ? 'No changes. Everything is committed.' : 'No commits yet. Add some files to get started.'}</p>
-      ) : (
+      {tab === 'history' && <GitHistory scope={scope} version={`${repo.head}|${repo.branch}|${repo.upstream}|${repo.ahead}|${repo.behind}`} />}
+      {tab === 'issues' && <GitIssues scope={scope} lookup={forge.lookup} />}
+      {tab === 'pulls' && <GitPulls scope={scope} repo={repo} lookup={forge.lookup} onRefreshLookup={forge.refresh} onCreate={() => setCreateOpen(true)} />}
+
+      {tab === 'changes' && (
         <>
-          {staged.length > 0 && (
-            <FileGroup
-              title="Staged"
-              files={staged}
-              kind="staged"
-              readOnly={readOnly}
-              onOpen={(file) => setDiff({ file, staged: true })}
-              groupAction={!readOnly && <GroupButton label="Unstage all" onClick={() => void act('unstage', () => api.gitUnstage(scope, staged.map((f) => f.path)))} icon={<Minus size={13} />} />}
-              rowActions={(f) => <RowButton label="Unstage" onClick={() => void act('unstage', () => api.gitUnstage(scope, [f.path]))} icon={<Minus size={13} />} />}
-            />
+          <CurrentPull repo={repo} lookup={forge.lookup} onCreate={() => setCreateOpen(true)} onOpen={setPullOpen} />
+          {!readOnly && (
+            <div>
+              <textarea
+                className={cx(inputClass, 'min-h-[64px] resize-y font-[inherit]')}
+                placeholder={repo.branch ? `Message (commit on ${repo.branch})` : 'Commit message'}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    void commit();
+                  }
+                }}
+              />
+              <div className="mt-2 flex gap-2">
+                <Button variant="primary" className="flex-1" disabled={!canCommit} onClick={() => void commit()}>
+                  {busy === 'commit' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                  {commitAll && unstaged.length > 0 ? `Commit all ${unstaged.length} change${unstaged.length === 1 ? '' : 's'}` : 'Commit'}
+                </Button>
+                {agent && hasChanges && (
+                  <IconButton
+                    label={`Write the message with ${agent.name}`}
+                    tip={asked ? `${agent.name} is writing the message…` : agent.busy ? `${agent.name} is busy` : `Write the message with ${agent.name}`}
+                    disabled={agent.busy || asked}
+                    onClick={() => void writeMessage()}
+                    className="h-[34px]! w-[34px]! border border-line"
+                  >
+                    {asked ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} strokeWidth={1.8} />}
+                  </IconButton>
+                )}
+              </div>
+            </div>
           )}
-          {unstaged.length > 0 && (
-            <FileGroup
-              title="Changes"
-              files={unstaged}
-              kind="unstaged"
-              readOnly={readOnly}
-              onOpen={(file) => setDiff({ file, staged: false })}
-              groupAction={
-                !readOnly && (
-                  <>
-                    <GroupButton label="Discard all" onClick={() => void discard(unstaged.filter((f) => f.unstaged !== 'conflicted'))} icon={<Undo2 size={13} />} />
-                    <GroupButton label="Stage all" onClick={() => void act('stage', () => api.gitStage(scope, unstaged.map((f) => f.path)))} icon={<Plus size={13} />} />
-                  </>
-                )
-              }
-              rowActions={(f) => (
-                <>
-                  {f.unstaged !== 'conflicted' && <RowButton label="Discard changes" onClick={() => void discard([f])} icon={<Undo2 size={13} />} />}
-                  <RowButton label={f.unstaged === 'conflicted' ? 'Mark resolved' : 'Stage'} onClick={() => void act('stage', () => api.gitStage(scope, [f.path]))} icon={<Plus size={13} />} />
-                </>
+
+          {repo.files.length === 0 ? (
+            <p className="py-4 text-center text-[13px] text-muted">{repo.head ? 'No changes. Everything is committed.' : 'No commits yet. Add some files to get started.'}</p>
+          ) : (
+            <>
+              {staged.length > 0 && (
+                <FileGroup
+                  title="Staged"
+                  files={staged}
+                  kind="staged"
+                  readOnly={readOnly}
+                  onOpen={(file) => setDiff({ file, staged: true })}
+                  groupAction={!readOnly && <GroupButton label="Unstage all" onClick={() => void act('unstage', () => api.gitUnstage(scope, staged.map((f) => f.path)))} icon={<Minus size={13} />} />}
+                  rowActions={(f) => <RowButton label="Unstage" onClick={() => void act('unstage', () => api.gitUnstage(scope, [f.path]))} icon={<Minus size={13} />} />}
+                />
               )}
-            />
+              {unstaged.length > 0 && (
+                <FileGroup
+                  title="Changes"
+                  files={unstaged}
+                  kind="unstaged"
+                  readOnly={readOnly}
+                  onOpen={(file) => setDiff({ file, staged: false })}
+                  groupAction={
+                    !readOnly && (
+                      <>
+                        <GroupButton label="Discard all" onClick={() => void discard(unstaged.filter((f) => f.unstaged !== 'conflicted'))} icon={<Undo2 size={13} />} />
+                        <GroupButton label="Stage all" onClick={() => void act('stage', () => api.gitStage(scope, unstaged.map((f) => f.path)))} icon={<Plus size={13} />} />
+                      </>
+                    )
+                  }
+                  rowActions={(f) => (
+                    <>
+                      {f.unstaged !== 'conflicted' && <RowButton label="Discard changes" onClick={() => void discard([f])} icon={<Undo2 size={13} />} />}
+                      <RowButton label={f.unstaged === 'conflicted' ? 'Mark resolved' : 'Stage'} onClick={() => void act('stage', () => api.gitStage(scope, [f.path]))} icon={<Plus size={13} />} />
+                    </>
+                  )}
+                />
+              )}
+              {repo.truncated && <p className="text-[12px] text-faint">Showing the first {repo.files.length} changes.</p>}
+            </>
           )}
-          {repo.truncated && <p className="text-[12px] text-faint">Showing the first {repo.files.length} changes.</p>}
         </>
       )}
 
       {diff && <DiffDialog scope={scope} file={diff.file} staged={diff.staged} onClose={() => setDiff(null)} />}
       {remoteOpen && <RemoteDialog scope={scope} onClose={() => setRemoteOpen(false)} onDone={refresh} />}
+      {createOpen && forge.lookup?.repo && (
+        <CreatePullDialog
+          scope={scope}
+          repo={repo}
+          lookup={forge.lookup}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(p) => {
+            forge.refresh();
+            refresh();
+            setPullOpen(p.number);
+          }}
+        />
+      )}
+      {pullOpen !== null && (
+        <PullDialog
+          scope={scope}
+          number={pullOpen}
+          onClose={() => setPullOpen(null)}
+          onChanged={() => {
+            forge.refresh();
+            refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** This chat works in a linked worktree: say where the main one is, and offer to go back. */
+function WorktreeNote({ scope, repo, onDone }: { scope: GitScope; repo: NonNullable<GitStatus['repo']>; onDone: () => void }) {
+  const { attempt } = useStore();
+  const [busy, setBusy] = useState(false);
+  const chat = scope.kind === 'conversation' && !IS_REMOTE;
+  const remove = async () => {
+    const ok = await confirmDialog({
+      title: 'Remove this worktree?',
+      message: `Its folder is deleted and the chat goes back to ${repo.worktreeOf}. The ${repo.branch ?? 'worktree’s'} branch and its commits are kept.`,
+      confirmLabel: 'Remove worktree',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.gitRemoveWorktree(scope, false);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!/uncommitted changes/.test(message)) await attempt(() => Promise.reject(err));
+      else if (await confirmDialog({ title: 'The worktree has uncommitted changes', message: 'Remove it anyway? Those changes are lost.', confirmLabel: 'Remove and lose them', tone: 'danger' })) {
+        await attempt(() => api.gitRemoveWorktree(scope, true));
+      }
+    }
+    setBusy(false);
+    onDone();
+  };
+  return (
+    <div className="flex items-start gap-2 rounded-xl bg-sunken px-3 py-2 text-[12.5px] text-muted">
+      <FolderGit2 size={14} className="mt-0.5 shrink-0" />
+      <span className="min-w-0 flex-1">
+        A worktree of <span className="break-all font-mono text-[11px] text-ink-2">{repo.worktreeOf}</span>
+        {chat ? ', just for this chat.' : '.'}
+      </span>
+      {chat && (
+        <IconButton label="Remove this worktree" tip="Remove this worktree and go back to the main one" disabled={busy} onClick={() => void remove()} className="h-6! w-6!">
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <FolderMinus size={13} />}
+        </IconButton>
+      )}
     </div>
   );
 }
@@ -460,12 +607,13 @@ function BranchPicker({ scope, repo, readOnly, onChanged }: { scope: GitScope; r
     await attempt(() => api.gitCheckout(scope, branch));
     onChanged();
   };
-  const create = async (close: () => void) => {
+  const create = async (close: () => void, worktree = false) => {
     const clean = name.trim();
     if (!clean) return;
     close();
     const ok = await attempt(async () => {
-      await api.gitCreateBranch(scope, clean);
+      if (worktree) await api.gitCreateWorktree(scope, clean);
+      else await api.gitCreateBranch(scope, clean);
       return true;
     });
     if (ok) setName('');
@@ -503,9 +651,18 @@ function BranchPicker({ scope, repo, readOnly, onChanged }: { scope: GitScope; r
                 onKeyDown={(e) => e.key === 'Enter' && void create(close)}
               />
               {name.trim() && (
-                <Button size="sm" className="mt-1.5 w-full" onClick={() => void create(close)}>
-                  <Plus size={13} /> Create “{name.trim()}” from {repo.branch ?? 'here'}
-                </Button>
+                <>
+                  <Button size="sm" className="mt-1.5 w-full" onClick={() => void create(close)}>
+                    <Plus size={13} /> Create “{name.trim()}” from {repo.branch ?? 'here'}
+                  </Button>
+                  {scope.kind === 'conversation' && repo.head && (
+                    <Tooltip label="A separate folder on the new branch, just for this chat, so its agent doesn’t touch other chats’ work.">
+                      <Button size="sm" variant="ghost" className="mt-1 w-full" onClick={() => void create(close, true)}>
+                        <FolderGit2 size={13} /> …in its own worktree for this chat
+                      </Button>
+                    </Tooltip>
+                  )}
+                </>
               )}
             </div>
             {!branches && (
@@ -597,31 +754,6 @@ function DiffDialog({ scope, file, staged, onClose }: { scope: GitScope; file: G
       {diff && (diff.binary ? <p className="text-[13px] text-muted">Binary file, no text diff.</p> : !diff.text.trim() ? <p className="text-[13px] text-muted">No textual changes (only file mode or whitespace).</p> : <DiffText text={diff.text} />)}
       {diff?.truncated && <p className="mt-2 text-[12px] text-faint">The diff is long, so only the start is shown.</p>}
     </Modal>
-  );
-}
-
-export function DiffText({ text }: { text: string }) {
-  // Skip the header lines; the dialog title already names the file.
-  const lines = text.split('\n');
-  const start = lines.findIndex((l) => l.startsWith('@@'));
-  return (
-    <pre className="overflow-x-auto rounded-xl bg-sunken py-2 font-mono text-[12px] leading-[1.55]">
-      {(start >= 0 ? lines.slice(start) : lines).map((line, i) => (
-        <div
-          key={i}
-          className={cx(
-            'whitespace-pre px-3',
-            line.startsWith('+') && 'bg-ok/15 text-ink',
-            line.startsWith('-') && 'bg-bad/15 text-ink',
-            line.startsWith('@@') && 'mt-1 text-accent first:mt-0',
-            line.startsWith('\\') && 'text-faint',
-            !/^[-+@\\]/.test(line) && 'text-ink-2',
-          )}
-        >
-          {line || ' '}
-        </div>
-      ))}
-    </pre>
   );
 }
 

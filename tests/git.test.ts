@@ -2,8 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GitService, findGit } from '../src/main/git/service';
+import { ForgeService } from '../src/main/forge/service';
+import { ForgeStore } from '../src/main/forge/accounts';
+import type { Fetch } from '../src/main/forge/clients';
 import { isCloneableUrl, isSafeRelativePath, parseBranches, parseRemotes, parseStatus, redactUrl, repoFolderName, BRANCH_FORMAT } from '../src/main/git/parse';
 
 describe('git parsing', () => {
@@ -204,5 +208,146 @@ describe.skipIf(!findGit())('GitService', () => {
     writeFileSync(path.join(dir, 'x'), 'x');
     await git.commit(dir, 'x', true);
     await expect(git.push(dir)).rejects.toThrow(/no remote/);
+  });
+
+  it('reads history across branches, one commit, and its diffs', async () => {
+    const dir = path.join(base, 'history');
+    mkdirSync(dir);
+    await git.init(dir);
+    expect(await git.log(dir)).toEqual({ commits: [], more: false });
+    writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+    await git.commit(dir, 'First', true);
+    await git.createBranch(dir, 'side');
+    writeFileSync(path.join(dir, 'b.txt'), 'side\n');
+    await git.commit(dir, 'On the side', true);
+    await git.checkout(dir, 'main');
+    sh(dir, 'mv', 'a.txt', 'renamed.txt');
+    await git.commit(dir, 'Rename\n\nWith a body.', true);
+    sh(dir, 'merge', '--no-ff', '-m', 'Merge side', 'side');
+    sh(dir, 'tag', 'v1');
+
+    const page = await git.log(dir, 0, 3);
+    expect(page.more).toBe(true);
+    expect(page.commits[0]).toMatchObject({ subject: 'Merge side' });
+    expect(page.commits[0].parents).toHaveLength(2);
+    expect(page.commits[0].refs).toEqual(expect.arrayContaining([{ name: 'HEAD', kind: 'head' }, { name: 'main', kind: 'branch' }, { name: 'v1', kind: 'tag' }]));
+    const rest = await git.log(dir, 3, 10);
+    expect([...page.commits, ...rest.commits].map((c) => c.subject).sort()).toEqual(['First', 'Merge side', 'On the side', 'Rename']);
+    expect(rest.more).toBe(false);
+
+    const rename = [...page.commits, ...rest.commits].find((c) => c.subject === 'Rename')!;
+    const detail = await git.showCommit(dir, rename.hash);
+    expect(detail.message).toBe('Rename\n\nWith a body.');
+    expect(detail.author).toBe('Nest Test');
+    expect(detail.files).toEqual([{ path: 'renamed.txt', origPath: 'a.txt', change: 'renamed', additions: 0, deletions: 0 }]);
+
+    const first = rest.commits.find((c) => c.subject === 'First')!;
+    const root = await git.showCommit(dir, first.hash);
+    expect(root.files).toEqual([{ path: 'a.txt', origPath: null, change: 'added', additions: 1, deletions: 0 }]);
+    expect((await git.commitDiff(dir, first.hash, 'a.txt')).text).toContain('+one');
+    await expect(git.showCommit(dir, '--all')).rejects.toThrow(/isn’t a commit/);
+    await expect(git.showCommit(dir, 'deadbeef')).rejects.toThrow(/no commit/);
+  });
+
+  it('gives a chat its own worktree and removes it again', async () => {
+    const dir = path.join(base, 'wt-main');
+    mkdirSync(dir);
+    await git.init(dir);
+    await expect(git.createWorktree(dir, 'feat')).rejects.toThrow(/first commit/);
+    writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    await git.commit(dir, 'Base', true);
+    expect((await git.status(dir)).repo?.worktreeOf).toBeNull();
+
+    const wt = await git.createWorktree(dir, 'feat/one');
+    expect(wt).toBe(path.join(base, 'wt-main.worktrees', 'feat-one'));
+    const inside = (await git.status(wt)).repo!;
+    expect(inside).toMatchObject({ branch: 'feat/one', worktreeOf: dir });
+    await expect(git.createWorktree(dir, 'feat/one')).rejects.toThrow(/already a folder/);
+    await expect(git.createWorktree(dir, 'bad..name')).rejects.toThrow(/can’t be a branch name/);
+    // A worktree of a worktree still goes beside the main one.
+    const second = await git.createWorktree(wt, 'two');
+    expect(path.dirname(second)).toBe(path.join(base, 'wt-main.worktrees'));
+    expect((await git.removeWorktree(second, false))).toBe(dir);
+
+    writeFileSync(path.join(wt, 'dirty.txt'), 'x');
+    await expect(git.removeWorktree(wt, false)).rejects.toThrow(/uncommitted changes/);
+    expect(await git.removeWorktree(wt, true)).toBe(dir);
+    expect(existsSync(wt)).toBe(false);
+    // The branch is kept.
+    expect((await git.branches(dir)).map((b) => b.name)).toContain('feat/one');
+    await expect(git.removeWorktree(dir, false)).rejects.toThrow(/isn’t a linked worktree/);
+    // An existing branch that isn't checked out is used as is.
+    const again = await git.createWorktree(dir, 'feat/one');
+    expect((await git.status(again)).repo?.branch).toBe('feat/one');
+  });
+
+  it('reads and sets who commits are made as', async () => {
+    expect(await git.identity()).toEqual({ name: 'Nest Test', email: 'test@nest.local' });
+    await expect(git.setIdentity({ name: 'X', email: 'not an email' })).rejects.toThrow(/email/);
+    await expect(git.setIdentity({ name: 'Two\nlines', email: null })).rejects.toThrow(/one line/);
+    expect(await git.setIdentity({ name: 'Someone Else', email: 'else@nest.local' })).toEqual({ name: 'Someone Else', email: 'else@nest.local' });
+    expect(await git.setIdentity({ name: 'Nest Test', email: 'test@nest.local' })).toEqual({ name: 'Nest Test', email: 'test@nest.local' });
+  });
+
+  it('finds the forge repository and opens a pull request, pushing first', async () => {
+    // A GitHub remote whose pushes land in a local bare repository instead.
+    const bare = path.join(base, 'gh-bare.git');
+    sh(base, 'init', '--bare', '--initial-branch=main', bare);
+    const dir = path.join(base, 'forge');
+    mkdirSync(dir);
+    await git.init(dir);
+    await git.addRemote(dir, 'origin', 'https://github.com/o/r.git');
+    sh(dir, 'config', `url.${pathToFileURL(bare).href}.pushInsteadOf`, 'https://github.com/o/r.git');
+    writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    await git.commit(dir, 'Base', true);
+    await git.push(dir);
+    await git.createBranch(dir, 'feat');
+    writeFileSync(path.join(dir, 'b.txt'), 'b\n');
+    await git.commit(dir, 'Feature', true);
+
+    const requests: Array<{ key: string; body: unknown }> = [];
+    const fetch: Fetch = async (url, init) => {
+      const key = `${init?.method ?? 'GET'} ${url}`;
+      requests.push({ key, body: init?.body ? JSON.parse(String(init.body)) : null });
+      const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
+      if (key === 'GET https://api.github.com/user') return json({ login: 'me' });
+      if (key === 'GET https://api.github.com/repos/o/r') return json({ default_branch: 'main', html_url: 'https://github.com/o/r' });
+      if (key === 'POST https://api.github.com/graphql') return json({ data: { repository: { pullRequests: { nodes: [] } } } });
+      if (key === 'POST https://api.github.com/repos/o/r/pulls') return json({ number: 5, title: 'Feature', state: 'open', user: { login: 'me' }, head: { ref: 'feat' }, base: { ref: 'main' }, html_url: 'https://github.com/o/r/pull/5' });
+      return new Response('{}', { status: 404 });
+    };
+    const store = new ForgeStore(path.join(base, 'forges.json'), { available: () => true, encrypt: (t) => Buffer.from(t), decrypt: (b) => b.toString() });
+    store.setToken('github.com', 'tok');
+    const forge = new ForgeService({ store, git, fetch, discovery: { exec: async () => ({ code: 1, stdout: '' }), find: () => null, readFile: () => null, git: () => null } });
+
+    const found = await forge.lookup(dir);
+    expect(found.error).toBeNull();
+    expect(found.repo).toMatchObject({ host: 'github.com', kind: 'github', path: 'o/r', defaultBranch: 'main', current: null });
+    expect(found.repo?.account).toMatchObject({ state: 'ready', user: 'me', source: 'saved' });
+
+    const pull = await forge.createPull(dir, { title: 'Feature', body: 'Adds b', base: '', draft: false });
+    expect(pull).toMatchObject({ number: 5, head: 'feat' });
+    // feat had no upstream: Nest pushed it first.
+    expect(sh(bare, 'branch', '--list', 'feat')).toContain('feat');
+    expect((await git.status(dir)).repo).toMatchObject({ upstream: 'origin/feat', ahead: 0 });
+    expect(requests.find((r) => r.key === 'POST https://api.github.com/repos/o/r/pulls')?.body).toEqual({ title: 'Feature', body: 'Adds b', head: 'feat', base: 'main', draft: false });
+
+    await git.checkout(dir, 'main');
+    await expect(forge.createPull(dir, { title: 'Oops', body: '', base: 'main', draft: false })).rejects.toThrow(/Create a branch/);
+  }, 60_000);
+
+  it('says when a remote is on a host it doesn’t know', async () => {
+    const dir = path.join(base, 'unknown-host');
+    mkdirSync(dir);
+    await git.init(dir);
+    await git.addRemote(dir, 'origin', 'https://git.example.com/o/r.git');
+    const forge = new ForgeService({
+      store: new ForgeStore(path.join(base, 'forges-unknown.json'), { available: () => true, encrypt: (t) => Buffer.from(t), decrypt: (b) => b.toString() }),
+      git,
+      fetch: async () => new Response('{}', { status: 500 }),
+      discovery: { exec: async () => ({ code: 1, stdout: '' }), find: () => null, readFile: () => null, git: () => null },
+    });
+    expect(await forge.lookup(dir)).toEqual({ repo: null, unknownHost: 'git.example.com', error: null });
+    await expect(forge.listPulls(dir)).rejects.toThrow(/doesn’t know what kind of forge git.example.com is/);
   });
 });

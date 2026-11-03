@@ -3,7 +3,7 @@ import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { API_METHODS, type ApiMethod, type NestApi } from '@shared/ipc';
-import type { AgentDraft, AppSettings, BackupInfo, Attachment, ConversationDetail, GitScope, NestEvent, ProjectDraft, ProviderId } from '@shared/types';
+import type { AgentDraft, AppSettings, BackupInfo, Attachment, ConversationDetail, ForgeKind, ForgeMergeMethod, ForgePullDraft, GitScope, NestEvent, ProjectDraft, ProviderId } from '@shared/types';
 import { API_PROVIDERS, PROVIDERS, isProviderId, type ApiProviderId } from '@shared/types';
 import type { ApiKeyStore } from './apiKeys';
 import type { NestDb } from './db';
@@ -16,6 +16,7 @@ import type { ModelStore } from './models';
 import type { Updater } from './updater';
 import type { RemoteHost } from './remote/host';
 import { GitError, type GitService } from './git/service';
+import { ForgeError, type ForgeService } from './forge/service';
 import { sanitizePermissions, sanitizeSettings } from './settings';
 import { UserFacingError } from './runs';
 
@@ -111,6 +112,7 @@ export function createHandlers(deps: {
   updater: Updater;
   remote: RemoteHost;
   git: GitService;
+  forge: ForgeService;
 }): Handlers {
   const { db, runs, providers } = deps;
   const assertApiProvider = (p: unknown): ApiProviderId => {
@@ -137,7 +139,7 @@ export function createHandlers(deps: {
     try {
       return await fn();
     } catch (err) {
-      if (err instanceof GitError) throw new UserFacingError(err.message);
+      if (err instanceof GitError || err instanceof ForgeError) throw new UserFacingError(err.message);
       throw err;
     }
   };
@@ -145,6 +147,35 @@ export function createHandlers(deps: {
     if (!Array.isArray(paths) || !paths.length) throw new UserFacingError('Pick at least one file.');
     return paths.slice(0, 5000).map((p) => assertString(p, 'Path', 4000));
   };
+  const forgeHost = (host: unknown): string => assertString(host, 'Host', 260).trim().toLowerCase();
+  const forgeKind = (kind: unknown): ForgeKind => {
+    if (kind !== 'github' && kind !== 'gitlab' && kind !== 'forgejo') throw new UserFacingError('Unknown kind of forge');
+    return kind;
+  };
+  const pullNumber = (n: unknown): number => {
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) throw new UserFacingError('Unknown pull request');
+    return n;
+  };
+  const pullDraft = (d: ForgePullDraft): ForgePullDraft => ({
+    title: assertString(d?.title, 'Title', 256),
+    body: assertString(d?.body ?? '', 'Description', 65_000),
+    base: assertString(d?.base ?? '', 'Base branch', 250).trim(),
+    draft: Boolean(d?.draft),
+  });
+
+  const mergeMethod = (m: unknown): ForgeMergeMethod => {
+    if (m !== 'merge' && m !== 'squash' && m !== 'rebase') throw new UserFacingError('Unknown way to merge');
+    return m;
+  };
+  const issueState = (state: unknown): 'open' | 'closed' => (state === 'closed' ? 'closed' : 'open');
+  /** A chat (not a project) that isn't mid-turn: worktrees move its working folder. */
+  const idleChat = (scope: GitScope): string => {
+    if (scope?.kind !== 'conversation') throw new UserFacingError('Worktrees are for chats. A project’s chats can each have their own.');
+    const id = assertString(scope.id, 'id', 100);
+    if (runs.isRunning(id)) throw new UserFacingError('Wait for the current response to finish first.');
+    return id;
+  };
+
   /** Point a chat or project at a new folder (after cloning into a subfolder). */
   const relink = (scope: GitScope, folder: string) => {
     if (scope.kind === 'conversation') {
@@ -435,6 +466,56 @@ export function createHandlers(deps: {
     gitFetch: (scope) => gitCall(() => deps.git.fetch(gitFolder(scope))),
     gitPull: (scope) => gitCall(() => deps.git.pull(gitFolder(scope))),
     gitPush: (scope) => gitCall(() => deps.git.push(gitFolder(scope))),
+    gitLog: (scope, skip, limit) => gitCall(() => deps.git.log(gitFolder(scope), Number(skip) || 0, Number(limit) || 200)),
+    gitShowCommit: (scope, hash) => gitCall(() => deps.git.showCommit(gitFolder(scope), assertString(hash, 'Commit', 64))),
+    gitCommitDiff: (scope, hash, file) => gitCall(() => deps.git.commitDiff(gitFolder(scope), assertString(hash, 'Commit', 64), assertString(file, 'Path', 4000))),
+    gitCreateWorktree: (scope, branch) =>
+      gitCall(async () => {
+        idleChat(scope);
+        const target = await deps.git.createWorktree(gitFolder(scope), assertString(branch, 'Branch', 250).trim());
+        relink(scope, target);
+        return deps.git.status(target);
+      }),
+    gitRemoveWorktree: (scope, force) =>
+      gitCall(async () => {
+        const id = idleChat(scope);
+        const main = await deps.git.removeWorktree(gitFolder(scope), Boolean(force));
+        // Back to the main working tree: no folder of its own when that's where the chat would work anyway.
+        const conversation = db.getConversation(id)!;
+        const fallback = runs.workspaceFor({ ...conversation, workspace: null });
+        const same = path.relative(path.resolve(fallback), path.resolve(main)) === '';
+        const updated = db.updateConversation(id, { workspace: same ? null : main });
+        deps.broadcast({ type: 'conversation', conversation: updated });
+        return deps.git.status(main);
+      }),
+    getGitInfo: () =>
+      gitCall(async () => {
+        deps.git.redetect(); // Settings is where someone checks after installing git
+        const version = await deps.git.gitVersion();
+        return { version, identity: version ? await deps.git.identity() : { name: null, email: null } };
+      }),
+    setGitIdentity: (identity) =>
+      gitCall(() => deps.git.setIdentity({ name: identity?.name ? assertString(identity.name, 'Name', 200) : null, email: identity?.email ? assertString(identity.email, 'Email', 200) : null })),
+    forgeAccounts: (force) => gitCall(() => deps.forge.accounts(Boolean(force))),
+    forgeAddHost: (host, kind) => gitCall(() => deps.forge.addHost(forgeHost(host), forgeKind(kind))),
+    forgeRemoveHost: (host) => gitCall(async () => deps.forge.removeHost(forgeHost(host))),
+    forgeSetToken: (host, token) => gitCall(() => deps.forge.setToken(forgeHost(host), assertString(token, 'Token', 2000))),
+    forgeClearToken: (host) => gitCall(() => deps.forge.clearToken(forgeHost(host))),
+    forgeLookup: (scope) => gitCall(() => deps.forge.lookup(gitFolder(scope))),
+    forgeListPulls: (scope, state) => gitCall(() => deps.forge.listPulls(gitFolder(scope), state === 'closed' || state === 'all' ? state : 'open')),
+    forgeGetPull: (scope, number) => gitCall(() => deps.forge.getPull(gitFolder(scope), pullNumber(number))),
+    forgeCheckLog: (scope, checkId) => gitCall(() => deps.forge.checkLog(gitFolder(scope), assertString(checkId, 'Check', 200))),
+    forgeCreatePull: (scope, draft) => gitCall(() => deps.forge.createPull(gitFolder(scope), pullDraft(draft))),
+    forgeComment: (scope, number, body) => gitCall(() => deps.forge.comment(gitFolder(scope), pullNumber(number), assertString(body, 'Comment', 65_000))),
+    forgeMergePull: (scope, number, method, deleteBranch) => gitCall(() => deps.forge.merge(gitFolder(scope), pullNumber(number), mergeMethod(method), Boolean(deleteBranch))),
+    forgeListIssues: (scope, state) => gitCall(() => deps.forge.listIssues(gitFolder(scope), issueState(state))),
+    forgeGetIssue: (scope, number) => gitCall(() => deps.forge.getIssue(gitFolder(scope), pullNumber(number))),
+    forgeCreateIssue: (scope, title, body) => gitCall(() => deps.forge.createIssue(gitFolder(scope), assertString(title, 'Title', 256), assertString(body ?? '', 'Description', 65_000))),
+    forgeCommentIssue: (scope, number, body) => gitCall(() => deps.forge.commentIssue(gitFolder(scope), pullNumber(number), assertString(body, 'Comment', 65_000))),
+    forgeStartSignIn: (host) => gitCall(() => deps.forge.startSignIn(forgeHost(host))),
+    forgeCancelSignIn: (host) => gitCall(async () => deps.forge.cancelSignIn(forgeHost(host))),
+    forgeSignOut: (host) => gitCall(() => deps.forge.signOut(forgeHost(host))),
+    forgeSetOAuthClient: (host, clientId) => gitCall(() => deps.forge.setOAuthClient(forgeHost(host), clientId ? assertString(clientId, 'Client ID', 200) : null)),
 
     getSettings: () => db.getSettings(),
     getUpdateState: () => deps.updater.getState(),

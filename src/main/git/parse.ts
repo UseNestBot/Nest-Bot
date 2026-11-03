@@ -1,4 +1,4 @@
-import type { GitBranch, GitChange, GitFileChange, GitRemote } from '@shared/types';
+import type { GitBranch, GitChange, GitCommit, GitCommitFile, GitFileChange, GitRef, GitRemote } from '@shared/types';
 
 /** Most changed paths Nest lists for one repository. */
 export const MAX_STATUS_FILES = 2000;
@@ -124,4 +124,96 @@ export function isSafeRelativePath(p: string): boolean {
   if (!p || p.length > 4000 || p.includes('\0')) return false;
   if (p.startsWith('/') || p.startsWith('\\') || /^[A-Za-z]:/.test(p) || p.startsWith('-')) return false;
   return !p.split(/[/\\]/).some((part) => part === '..');
+}
+
+/** Format for `git log -z --decorate=full`: one commit per NUL-separated record. */
+export const LOG_FORMAT = ['%H', '%P', '%an', '%at', '%D', '%s'].join('%x1f');
+
+/** Parse the refs `%D` lists with `--decorate=full`, e.g. "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1". */
+export function parseRefs(decoration: string): GitRef[] {
+  const refs: GitRef[] = [];
+  for (const raw of decoration.split(', ')) {
+    const part = raw.trim();
+    if (!part) continue;
+    if (part === 'HEAD') {
+      refs.push({ name: 'HEAD', kind: 'head' });
+      continue;
+    }
+    const arrow = /^HEAD -> (.+)$/.exec(part);
+    const ref = (arrow ? arrow[1] : part).replace(/^tag: /, '');
+    if (arrow) refs.push({ name: 'HEAD', kind: 'head' });
+    if (ref.startsWith('refs/heads/')) refs.push({ name: ref.slice(11), kind: 'branch' });
+    else if (ref.startsWith('refs/remotes/')) {
+      // origin/HEAD only points at another remote branch.
+      if (!ref.endsWith('/HEAD')) refs.push({ name: ref.slice(13), kind: 'remote' });
+    } else if (ref.startsWith('refs/tags/')) refs.push({ name: ref.slice(10), kind: 'tag' });
+  }
+  return refs;
+}
+
+/** Parse `git log -z --format=<LOG_FORMAT>`. */
+export function parseLog(out: string): GitCommit[] {
+  const commits: GitCommit[] = [];
+  for (const record of out.split('\0')) {
+    // git puts a newline between records when there's no body; trim it off the hash.
+    const rec = record.replace(/^\n+/, '');
+    if (!rec.trim()) continue;
+    const [hash, parents, author, date, decoration, ...subject] = rec.split(SEP);
+    if (!/^[0-9a-f]{7,64}$/.test(hash ?? '')) continue;
+    commits.push({
+      hash,
+      parents: parents ? parents.split(' ').filter(Boolean) : [],
+      author: author ?? '',
+      date: Number(date) * 1000 || 0,
+      subject: subject.join(SEP).replace(/\n+$/, ''),
+      refs: parseRefs(decoration ?? ''),
+    });
+  }
+  return commits;
+}
+
+const STATUS_LETTER: Record<string, GitChange> = { ...CHANGE, U: 'conflicted' };
+
+/**
+ * Join `git diff-tree -r -M --name-status -z` and `--numstat -z` for one
+ * commit into one entry per file.
+ */
+export function parseCommitFiles(nameStatus: string, numstat: string): GitCommitFile[] {
+  const files: GitCommitFile[] = [];
+  const ns = nameStatus.split('\0');
+  for (let i = 0; i < ns.length; i++) {
+    const code = ns[i];
+    if (!code) continue;
+    const letter = code[0];
+    if (letter === 'R' || letter === 'C') {
+      const origPath = ns[++i] ?? '';
+      const p = ns[++i] ?? '';
+      files.push({ path: p, origPath, change: STATUS_LETTER[letter], additions: null, deletions: null });
+    } else {
+      const p = ns[++i] ?? '';
+      files.push({ path: p, origPath: null, change: STATUS_LETTER[letter] ?? 'modified', additions: null, deletions: null });
+    }
+  }
+  // numstat -z: "add\tdel\tpath\0", or "add\tdel\t\0old\0new\0" for a rename. "-" counts mean binary.
+  const nm = numstat.split('\0');
+  for (let i = 0; i < nm.length; i++) {
+    const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(nm[i]);
+    if (!m) continue;
+    let p = m[3];
+    if (!p) {
+      i++;
+      p = nm[++i] ?? '';
+    }
+    const file = files.find((f) => f.path === p);
+    if (file) {
+      file.additions = m[1] === '-' ? null : Number(m[1]);
+      file.deletions = m[2] === '-' ? null : Number(m[2]);
+    }
+  }
+  return files;
+}
+
+/** A commit hash (full or abbreviated) from the renderer. */
+export function isCommitHash(h: unknown): h is string {
+  return typeof h === 'string' && /^[0-9a-f]{4,64}$/i.test(h);
 }

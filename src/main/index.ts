@@ -7,7 +7,9 @@ import { API_PROVIDERS, PROVIDERS, type ApiProviderId, type AppSettings, type Ne
 import { ConnectorService } from './connectors';
 import { AgentBrowserHost } from './agentBrowser';
 import { TerminalHost } from './terminal';
-import { GitService } from './git/service';
+import { GitService, findGit } from './git/service';
+import { ForgeService } from './forge/service';
+import { ForgeStore, defaultDiscovery } from './forge/accounts';
 import { NestDb } from './db';
 import { PROVIDER_SETTINGS } from './settings';
 import { createHandlers, invokeHandler, registerIpc } from './ipc';
@@ -171,11 +173,12 @@ app.whenReady().then(() => {
   const onStatus = (status: ProviderStatus) => broadcast({ type: 'provider-status', status });
   claude = new ClaudeProvider(() => db.getSettings(), onStatus);
   codex = new CodexProvider(() => db.getSettings(), onStatus, (url) => void shell.openExternal(url), app.getVersion());
-  apiKeys = new ApiKeyStore(path.join(app.getPath('userData'), 'api-keys.json'), {
+  const cipher = {
     available: () => safeStorage.isEncryptionAvailable(),
-    encrypt: (text) => safeStorage.encryptString(text),
-    decrypt: (data) => safeStorage.decryptString(data),
-  });
+    encrypt: (text: string) => safeStorage.encryptString(text),
+    decrypt: (data: Buffer) => safeStorage.decryptString(data),
+  };
+  apiKeys = new ApiKeyStore(path.join(app.getPath('userData'), 'api-keys.json'), cipher);
   const probeDir = () => {
     const dir = path.join(app.getPath('userData'), 'probe');
     mkdirSync(dir, { recursive: true });
@@ -202,6 +205,14 @@ app.whenReady().then(() => {
   claude.onServersSeen = (seen) => connectors.noteSeen('claude', seen);
   const gitService = new GitService((root) => broadcast({ type: 'git-changed', root }));
   git = gitService;
+  const forgeService = new ForgeService({
+    store: new ForgeStore(path.join(app.getPath('userData'), 'forges.json'), cipher),
+    git: gitService,
+    // Electron's network stack, so the system proxy and certificates apply.
+    fetch: (url, init) => net.fetch(url, init),
+    discovery: defaultDiscovery(() => findGit()),
+    onChange: () => broadcast({ type: 'forges-changed' }),
+  });
   runs.onRunFinished = (conversationId, run, message) => {
     runs.handleHandoffCompletion(conversationId, run, message);
     // The agent may have edited files or committed: refresh any open view of its repository.
@@ -242,6 +253,9 @@ app.whenReady().then(() => {
   }, {
     host: terminalHost,
     enabledFor: (agentId) => db.getAgentAccess(agentId).terminal,
+  }, {
+    forge: forgeService,
+    onDraft: (conversationId, draft) => broadcast({ type: 'git-draft', conversationId, draft }),
   });
   // Codex and Claude Code run this script as their own process, which can't read inside app.asar,
   // so the installed app ships it unpacked (package.json "asarUnpack").
@@ -293,6 +307,7 @@ app.whenReady().then(() => {
     browser: browserHost,
     terminal: terminalHost,
     git: gitService,
+    forge: forgeService,
     getWindow: () => mainWindow,
     defaultWorkspace: () => effectiveDefaultWorkspace(db),
     broadcast,

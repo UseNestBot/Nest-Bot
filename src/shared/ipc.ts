@@ -16,8 +16,22 @@ import type {
   Attachment,
   Conversation,
   ConversationDetail,
+  ForgeAccount,
+  ForgeIssue,
+  ForgeIssueDetail,
+  ForgeKind,
+  ForgeLookup,
+  ForgeMergeMethod,
+  ForgeOAuthStart,
+  ForgePull,
+  ForgePullDetail,
+  ForgePullDraft,
   GitBranch,
+  GitCommitDetail,
   GitDiff,
+  GitIdentity,
+  GitInfo,
+  GitLogPage,
   GitScope,
   GitStatus,
   Handoff,
@@ -187,6 +201,52 @@ export interface NestApi {
   gitPull(scope: GitScope): Promise<void>;
   /** Push the current branch, setting its upstream the first time. */
   gitPush(scope: GitScope): Promise<void>;
+  /** History across HEAD and every branch and tag, newest first in graph order. */
+  gitLog(scope: GitScope, skip: number, limit: number): Promise<GitLogPage>;
+  gitShowCommit(scope: GitScope, hash: string): Promise<GitCommitDetail>;
+  /** One file's change in a commit, against its first parent. */
+  gitCommitDiff(scope: GitScope, hash: string, path: string): Promise<GitDiff>;
+  /** Give a chat its own worktree on a new (or existing, not checked out) branch, and switch the chat to it. */
+  gitCreateWorktree(scope: GitScope, branch: string): Promise<GitStatus>;
+  /** Remove the chat's linked worktree and switch it back to the main working tree. `force` loses uncommitted changes. */
+  gitRemoveWorktree(scope: GitScope, force: boolean): Promise<GitStatus>;
+  /** The installed git and who it commits as. */
+  getGitInfo(): Promise<GitInfo>;
+  /** Set (or with empty values, unset) the global user.name and user.email. */
+  setGitIdentity(identity: GitIdentity): Promise<GitIdentity>;
+
+  // Forges (GitHub, GitLab, Forgejo). Tokens stay in the main process.
+  /** Known forge hosts and whether Nest can sign in to each; `force` checks again instead of using the last check. */
+  forgeAccounts(force: boolean): Promise<ForgeAccount[]>;
+  /** Add a self-hosted forge. */
+  forgeAddHost(host: string, kind: ForgeKind): Promise<ForgeAccount>;
+  forgeRemoveHost(host: string): Promise<void>;
+  /** Check a pasted token, then save it encrypted. It's used ahead of CLI and credential-helper sign-ins. */
+  forgeSetToken(host: string, token: string): Promise<ForgeAccount>;
+  forgeClearToken(host: string): Promise<ForgeAccount>;
+  /** The forge repository behind the working folder, and the current branch's open pull request. */
+  forgeLookup(scope: GitScope): Promise<ForgeLookup>;
+  forgeListPulls(scope: GitScope, state: 'open' | 'closed' | 'all'): Promise<ForgePull[]>;
+  /** A pull request with its checks, reviews and comments. */
+  forgeGetPull(scope: GitScope, number: number): Promise<ForgePullDetail>;
+  /** The end of a check's log (GitHub Actions and GitLab CI). */
+  forgeCheckLog(scope: GitScope, checkId: string): Promise<string>;
+  /** Open a pull request for the current branch, pushing it first when needed. */
+  forgeCreatePull(scope: GitScope, draft: ForgePullDraft): Promise<ForgePull>;
+  forgeComment(scope: GitScope, number: number, body: string): Promise<void>;
+  /** Merge a pull request; `deleteBranch` deletes its head branch too when it's in the same repository. */
+  forgeMergePull(scope: GitScope, number: number, method: ForgeMergeMethod, deleteBranch: boolean): Promise<void>;
+  forgeListIssues(scope: GitScope, state: 'open' | 'closed'): Promise<ForgeIssue[]>;
+  forgeGetIssue(scope: GitScope, number: number): Promise<ForgeIssueDetail>;
+  forgeCreateIssue(scope: GitScope, title: string, body: string): Promise<ForgeIssue>;
+  forgeCommentIssue(scope: GitScope, number: number, body: string): Promise<void>;
+  /** Start a browser (OAuth device flow) sign-in; Nest saves the token when the user approves it. */
+  forgeStartSignIn(host: string): Promise<ForgeOAuthStart>;
+  forgeCancelSignIn(host: string): Promise<void>;
+  /** Forget a browser sign-in. */
+  forgeSignOut(host: string): Promise<ForgeAccount>;
+  /** Set the OAuth app client ID for a host's browser sign-in, or null to clear it. */
+  forgeSetOAuthClient(host: string, clientId: string | null): Promise<ForgeAccount>;
 
   // Updates (GitHub releases, installed silently by the NSIS installer)
   getUpdateState(): Promise<UpdateState>;
@@ -291,6 +351,33 @@ export const API_METHODS = [
   'gitFetch',
   'gitPull',
   'gitPush',
+  'gitLog',
+  'gitShowCommit',
+  'gitCommitDiff',
+  'gitCreateWorktree',
+  'gitRemoveWorktree',
+  'getGitInfo',
+  'setGitIdentity',
+  'forgeAccounts',
+  'forgeAddHost',
+  'forgeRemoveHost',
+  'forgeSetToken',
+  'forgeClearToken',
+  'forgeLookup',
+  'forgeListPulls',
+  'forgeGetPull',
+  'forgeCheckLog',
+  'forgeCreatePull',
+  'forgeComment',
+  'forgeMergePull',
+  'forgeListIssues',
+  'forgeGetIssue',
+  'forgeCreateIssue',
+  'forgeCommentIssue',
+  'forgeStartSignIn',
+  'forgeCancelSignIn',
+  'forgeSignOut',
+  'forgeSetOAuthClient',
   'getUpdateState',
   'checkForUpdates',
   'installUpdate',
