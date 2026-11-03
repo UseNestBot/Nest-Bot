@@ -47,6 +47,15 @@ async function runTurn(threadId, turnId, text) {
     notify('turn/completed', { threadId, turn: { id: turnId, status: 'completed', items: [] } });
     return;
   }
+  if (text.includes('[narrate]')) {
+    notify('item/agentMessage/delta', { threadId, turnId, itemId: 'n1', delta: 'Let me check.' });
+    notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: 'n1', text: 'Let me check.' } });
+    notify('item/started', { threadId, turnId, item: { type: 'commandExecution', id: 'cmd-n', command: 'ls', cwd: '/w', status: 'inProgress', exitCode: null, aggregatedOutput: null } });
+    notify('item/completed', { threadId, turnId, item: { type: 'commandExecution', id: 'cmd-n', command: 'ls', cwd: '/w', status: 'completed', exitCode: 0, aggregatedOutput: 'a.txt' } });
+    if (!text.includes('[ends-on-step]')) notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: 'n2', text: 'Found a.txt.' } });
+    notify('turn/completed', { threadId, turn: { id: turnId, status: 'completed', items: [] } });
+    return;
+  }
   if (text.includes('[steerable]')) {
     notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: 'a1', text: 'working on it' } });
     const steer = await new Promise((r) => steerable.set(turnId, r));

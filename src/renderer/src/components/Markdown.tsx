@@ -83,9 +83,9 @@ function Chart({ source }: { source: string }) {
   return <ChartBlock source={source} streaming={useContext(StreamingContext)} />;
 }
 
-export const Markdown = memo(function Markdown({ text, streaming = false }: { text: string; streaming?: boolean }) {
+export const Markdown = memo(function Markdown({ text, streaming = false, className }: { text: string; streaming?: boolean; className?: string }) {
   return (
-    <div className="md">
+    <div className={className ? `md ${className}` : 'md'}>
       <StreamingContext value={streaming}>
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} skipHtml>
           {text}

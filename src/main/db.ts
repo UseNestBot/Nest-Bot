@@ -5,6 +5,7 @@ import {
   DEFAULT_PERMISSIONS,
   DEFAULT_SETTINGS,
   type Activity,
+  type ActivityMeta,
   type Agent,
   type AgentAccess,
   type AgentDraft,
@@ -226,6 +227,8 @@ const MIGRATIONS: string[] = [
   ALTER TABLE schedules ADD COLUMN project_id TEXT;
   UPDATE schedules SET project_id = (SELECT a.project_id FROM agents a WHERE a.id = schedules.agent_id);
   `,
+  // Structured step input (full command, exit code, file edits) for the step's expanded view.
+  `ALTER TABLE activities ADD COLUMN meta TEXT;`,
 ];
 
 const json = <T>(v: SQLInputValue, fallback: T): T => {
@@ -736,6 +739,7 @@ export class NestDb {
       title: String(r.title),
       detail: s(r.detail),
       output: s(r.output),
+      meta: json<Activity['meta']>(r.meta, null),
       status: String(r.status) as Activity['status'],
       seq: n(r.seq),
       createdAt: n(r.created_at),
@@ -744,19 +748,21 @@ export class NestDb {
   }
 
   /** Insert or merge an activity; empty/undefined fields never erase stored values. */
-  upsertActivity(conversationId: string, a: Pick<Activity, 'id' | 'runId' | 'kind' | 'status'> & { title?: string; detail?: string | null; output?: string | null }): Activity {
+  upsertActivity(conversationId: string, a: Pick<Activity, 'id' | 'runId' | 'kind' | 'status'> & { title?: string; detail?: string | null; output?: string | null; meta?: ActivityMeta | null }): Activity {
     const now = Date.now();
     const cur = this.get('SELECT * FROM activities WHERE run_id = ? AND id = ?', a.runId, a.id);
     if (!cur) {
       const seq = n((this.get('SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM activities WHERE run_id = ?', a.runId) ?? {}).s);
       this.run(
-        `INSERT INTO activities (id, run_id, conversation_id, kind, title, detail, output, status, seq, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        a.id, a.runId, conversationId, a.kind, a.title || a.kind, a.detail ?? null, a.output ?? null, a.status, seq, now, now,
+        `INSERT INTO activities (id, run_id, conversation_id, kind, title, detail, output, meta, status, seq, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        a.id, a.runId, conversationId, a.kind, a.title || a.kind, a.detail ?? null, a.output ?? null, a.meta ? JSON.stringify(a.meta) : null, a.status, seq, now, now,
       );
     } else {
+      // Meta fields merge, so a result can add the exit code without repeating the command.
+      const meta = a.meta ? JSON.stringify({ ...json<ActivityMeta>(cur.meta, {}), ...a.meta }) : s(cur.meta);
       this.run(
-        'UPDATE activities SET title = ?, detail = ?, output = ?, status = ?, updated_at = ? WHERE run_id = ? AND id = ?',
-        a.title || String(cur.title), a.detail ?? s(cur.detail), a.output ?? s(cur.output), a.status, now, a.runId, a.id,
+        'UPDATE activities SET title = ?, detail = ?, output = ?, meta = ?, status = ?, updated_at = ? WHERE run_id = ? AND id = ?',
+        a.title || String(cur.title), a.detail ?? s(cur.detail), a.output ?? s(cur.output), meta, a.status, now, a.runId, a.id,
       );
     }
     return this.toActivity(this.get('SELECT * FROM activities WHERE run_id = ? AND id = ?', a.runId, a.id)!);

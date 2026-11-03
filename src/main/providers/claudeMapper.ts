@@ -1,4 +1,4 @@
-import type { ActivityKind, ApprovalChoice } from '@shared/types';
+import type { ActivityKind, ActivityMeta, ApprovalChoice } from '@shared/types';
 import { truncate, type ProviderEvent } from './types';
 
 /**
@@ -127,6 +127,7 @@ export class ClaudeStreamMapper {
           kind: described.kind,
           title: fromSubagent ? `${described.title} (subagent)` : described.title,
           detail: described.detail,
+          ...(described.meta ? { meta: described.meta } : {}),
           status: 'running',
         });
       }
@@ -222,6 +223,20 @@ export interface ToolDescription {
   kind: ActivityKind;
   title: string;
   detail: string | null;
+  meta?: ActivityMeta;
+}
+
+/** Edit text kept per side; enough for a readable diff without storing whole files. */
+const EDIT_TEXT_MAX = 8000;
+
+function claudeEdits(name: string, input: Record<string, unknown>, path: string): ActivityMeta['edits'] {
+  const text = (v: unknown) => truncate(typeof v === 'string' ? v : '', EDIT_TEXT_MAX);
+  if (name === 'Write') return [{ path, before: '', after: text(input.content) }];
+  if (name === 'Edit') return [{ path, before: text(input.old_string), after: text(input.new_string) }];
+  if (name === 'MultiEdit' && Array.isArray(input.edits)) {
+    return input.edits.filter(isObject).map((e) => ({ path, before: text(e.old_string), after: text(e.new_string) }));
+  }
+  return undefined;
 }
 
 export function describeToolUse(name: string, input: Record<string, unknown>): ToolDescription {
@@ -231,16 +246,26 @@ export function describeToolUse(name: string, input: Record<string, unknown>): T
   switch (name) {
     case 'Bash':
     case 'PowerShell':
-      return { kind: 'command', title: firstLine(s('command')) || name, detail: s('description') || (s('command').includes('\n') ? s('command') : null) };
+      return {
+        kind: 'command',
+        title: firstLine(s('command')) || name,
+        detail: s('description') || (s('command').includes('\n') ? s('command') : null),
+        meta: { command: truncate(s('command'), 6000), ...(s('description') ? { description: s('description') } : {}) },
+      };
     case 'Read':
     case 'Write':
     case 'Edit':
     case 'MultiEdit':
     case 'NotebookEdit':
-      return { kind: 'file', title: `${name} ${s('file_path') || s('notebook_path')}`.trim(), detail: name === 'Read' ? null : json };
+      return {
+        kind: 'file',
+        title: `${name} ${s('file_path') || s('notebook_path')}`.trim(),
+        detail: name === 'Read' ? null : json,
+        meta: { path: s('file_path') || s('notebook_path'), edits: claudeEdits(name, input, s('file_path')) },
+      };
     case 'Glob':
     case 'Grep':
-      return { kind: 'search', title: `${name} ${s('pattern')}`.trim(), detail: s('path') || null };
+      return { kind: 'search', title: `${name} ${s('pattern')}`.trim(), detail: s('path') || null, meta: { pattern: s('pattern'), ...(s('path') ? { path: s('path') } : {}) } };
     case 'WebFetch':
       return { kind: 'search', title: `Fetch ${s('url')}`.trim(), detail: s('prompt') || null };
     case 'WebSearch':

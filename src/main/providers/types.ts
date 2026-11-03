@@ -1,6 +1,7 @@
 import type { ConnectorPolicy } from '../connectors';
 import type {
   ActivityKind,
+  ActivityMeta,
   ActivityStatus,
   ApprovalChoice,
   Attachment,
@@ -29,6 +30,7 @@ export type ProviderEvent =
       title: string;
       detail?: string | null;
       output?: string | null;
+      meta?: ActivityMeta;
       status: ActivityStatus;
     }
   | {

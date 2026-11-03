@@ -192,8 +192,31 @@ export interface Message {
   createdAt: number;
 }
 
-export type ActivityKind = 'command' | 'file' | 'tool' | 'search' | 'mcp' | 'context' | 'info' | 'approval';
+/** `note` is text the agent wrote between steps; its full text is in `detail`. */
+export type ActivityKind = 'command' | 'file' | 'tool' | 'search' | 'mcp' | 'context' | 'info' | 'approval' | 'note';
 export type ActivityStatus = 'running' | 'done' | 'failed' | 'declined';
+
+/** A file change in an edit step: either before/after text, or a unified diff. */
+export interface FileEdit {
+  path: string;
+  before?: string;
+  after?: string;
+  diff?: string;
+}
+
+/** Structured input of a step, for the step's expanded view. Older steps have none. */
+export interface ActivityMeta {
+  /** The full command, for command steps. */
+  command?: string;
+  /** What the agent said the command does. */
+  description?: string;
+  cwd?: string;
+  exitCode?: number | null;
+  path?: string;
+  edits?: FileEdit[];
+  /** Search pattern or query. */
+  pattern?: string;
+}
 
 export interface Activity {
   id: string;
@@ -202,6 +225,7 @@ export interface Activity {
   title: string;
   detail: string | null;
   output: string | null;
+  meta: ActivityMeta | null;
   status: ActivityStatus;
   seq: number;
   createdAt: number;

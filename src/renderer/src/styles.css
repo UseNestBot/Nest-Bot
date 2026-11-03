@@ -376,6 +376,36 @@ button {
   margin: 1.1em 0;
 }
 
+/* Notes the agent writes between steps: quieter than the answer they lead up to. */
+.md.md-note {
+  font-size: 14px;
+  color: var(--nest-ink-2);
+}
+
+/* Step views: shell colouring and diff lines */
+.sh-cmd {
+  color: var(--nest-ink);
+  font-weight: 600;
+}
+.sh-flag {
+  color: var(--nest-series-6);
+}
+.sh-str {
+  color: var(--nest-series-3);
+}
+.sh-var {
+  color: var(--nest-series-4);
+}
+.sh-op {
+  color: var(--nest-muted);
+}
+.diff-add {
+  background: color-mix(in srgb, var(--nest-ok) 13%, transparent);
+}
+.diff-del {
+  background: color-mix(in srgb, var(--nest-bad) 12%, transparent);
+}
+
 /* Chart cards drawn from ```chart blocks */
 .chart-card {
   width: 560px;

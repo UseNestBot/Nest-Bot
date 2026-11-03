@@ -98,9 +98,9 @@ describe('schedules and projects', () => {
     const project = first.createProject({ name: 'GTM', brief: '', workspace: null, color: '#3b82f6' });
     const agent = first.createAgent({ name: 'Pipeline', avatar: { shape: 'blob', color: '#4cbe6c', eyes: 'dots' }, instructions: '', provider: 'claude', model: null, workspace: null, projectId: project.id, pinned: false, permissions: DEFAULT_PERMISSIONS });
     const s = first.createSchedule({ agentId: agent.id, title: 'Sweep', prompt: 'sweep', cadence: daily, target: 'new', enabled: true }, null);
-    // Roll the file back to before this change: no project_id column, one migration behind.
+    // Roll the file back to before this change: no project_id column, and none of the migrations after it.
     const version = Number((first.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
-    first.db.exec(`ALTER TABLE schedules DROP COLUMN project_id; PRAGMA user_version = ${version - 1};`);
+    first.db.exec(`ALTER TABLE schedules DROP COLUMN project_id; ALTER TABLE activities DROP COLUMN meta; PRAGMA user_version = ${version - 2};`);
     first.close();
     const again = new NestDb(file);
     cleanups.push(() => again.close());
