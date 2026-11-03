@@ -27,6 +27,7 @@ export type SettingsSection =
   | 'conversations'
   | 'voice'
   | 'providers'
+  | 'git'
   | 'permissions'
   | 'memory'
   | 'remote'

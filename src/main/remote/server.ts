@@ -40,7 +40,7 @@ export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
   'testRemoteNotification',
   'listBackups',
   'backUpNow',
-  // Git is read-only from a phone for now: status, branches and diffs only.
+  // Git is read-only from a phone for now: status, branches, history and diffs only.
   'gitInit',
   'gitClone',
   'gitStage',
@@ -53,6 +53,16 @@ export const REMOTE_BLOCKED: ReadonlySet<ApiMethod> = new Set<ApiMethod>([
   'gitFetch',
   'gitPull',
   'gitPush',
+  'getGitInfo',
+  'setGitIdentity',
+  // Forge sign-ins live on the PC; phones can read pull requests and checks but not open or comment on them.
+  'forgeAccounts',
+  'forgeAddHost',
+  'forgeRemoveHost',
+  'forgeSetToken',
+  'forgeClearToken',
+  'forgeCreatePull',
+  'forgeComment',
 ]);
 
 /** Settings a paired device can't change: which programs run, and how much they may do unasked. */

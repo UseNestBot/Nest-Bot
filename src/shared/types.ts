@@ -405,7 +405,14 @@ export type NestEvent =
   /** Remote access changed (a phone paired, a device was removed, the server started or stopped). */
   | { type: 'remote-changed' }
   /** Something in a repository changed (a commit, a checkout, the index): views of it should refresh. */
-  | { type: 'git-changed'; root: string };
+  | { type: 'git-changed'; root: string }
+  /** A chat's agent drafted a commit message or pull request for the user to review in the source control panel. */
+  | { type: 'git-draft'; conversationId: string; draft: GitDraft }
+  /** Forge accounts changed (a token saved or removed, a host added). */
+  | { type: 'forges-changed' };
+
+/** Text an agent wrote for the source control panel. Nothing is committed or opened until the user says so. */
+export type GitDraft = { kind: 'commit'; message: string } | { kind: 'pull-request'; title: string; body: string; base: string | null };
 
 // ---------------------------------------------------------------------------
 // Git
@@ -482,6 +489,171 @@ export interface GitDiff {
   text: string;
   binary: boolean;
   truncated: boolean;
+}
+
+/** A ref pointing at a commit, as the history shows it. */
+export interface GitRef {
+  name: string;
+  kind: 'head' | 'branch' | 'remote' | 'tag';
+}
+
+/** One commit in the history. */
+export interface GitCommit {
+  /** Full hash. */
+  hash: string;
+  /** Full hashes, first parent first. */
+  parents: string[];
+  author: string;
+  /** Author date, ms since epoch. */
+  date: number;
+  subject: string;
+  refs: GitRef[];
+}
+
+export interface GitLogPage {
+  commits: GitCommit[];
+  /** More commits follow; ask again with skip = commits seen so far. */
+  more: boolean;
+}
+
+export interface GitCommitFile {
+  path: string;
+  origPath: string | null;
+  change: GitChange;
+  /** null for binary files. */
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface GitCommitDetail extends GitCommit {
+  email: string;
+  committer: string;
+  /** The whole message: subject, blank line, body. */
+  message: string;
+  files: GitCommitFile[];
+}
+
+/** Who commits are made as, from git's global config. */
+export interface GitIdentity {
+  name: string | null;
+  email: string | null;
+}
+
+/** Git on this computer, for Settings. */
+export interface GitInfo {
+  version: string | null;
+  identity: GitIdentity;
+}
+
+// ---------------------------------------------------------------------------
+// Forges (GitHub, GitLab, Forgejo/Gitea)
+
+export type ForgeKind = 'github' | 'gitlab' | 'forgejo';
+
+export const FORGE_LABEL: Record<ForgeKind, string> = { github: 'GitHub', gitlab: 'GitLab', forgejo: 'Forgejo / Gitea' };
+
+/** Where a forge token came from. A saved token wins; otherwise the first of the others that works. */
+export type ForgeTokenSource = 'saved' | 'gh' | 'glab' | 'tea' | 'credential';
+
+export const FORGE_SOURCE_LABEL: Record<ForgeTokenSource, string> = { saved: 'token saved in Nest', gh: 'GitHub CLI (gh)', glab: 'GitLab CLI (glab)', tea: 'Gitea CLI (tea)', credential: 'git credential helper' };
+
+/** One forge host and whether Nest can use it. Tokens never leave the main process. */
+export interface ForgeAccount {
+  /** e.g. "github.com", or "git.example.com:8443". */
+  host: string;
+  kind: ForgeKind;
+  /** Added by the user (a self-hosted forge), rather than a well-known host. */
+  custom: boolean;
+  state: 'ready' | 'signed-out' | 'error' | 'unchecked';
+  user: string | null;
+  source: ForgeTokenSource | null;
+  /** Last four characters of a saved token. */
+  savedHint: string | null;
+  error: string | null;
+}
+
+/** The forge repository behind a chat's or project's working folder. */
+export interface ForgeRepo {
+  host: string;
+  kind: ForgeKind;
+  /** owner/name, or group/subgroup/name on GitLab. */
+  path: string;
+  remote: string;
+  webUrl: string;
+  /** null when Nest isn't signed in to the host or couldn't read the repository. */
+  defaultBranch: string | null;
+  account: ForgeAccount;
+  /** The open pull request for the current branch, if there is one. */
+  current: ForgePull | null;
+}
+
+/** What Nest found looking for a working folder's forge repository. */
+export interface ForgeLookup {
+  /** null when the repository has no remote on a forge Nest knows. */
+  repo: ForgeRepo | null;
+  /** A remote's host that isn't a known forge (add it in Settings to use it). */
+  unknownHost: string | null;
+  /** Why the repository couldn't be read (signed in, but the forge said no). */
+  error: string | null;
+}
+
+export type ForgeCheckState = 'pending' | 'success' | 'failure' | 'neutral' | 'skipped';
+
+export interface ForgeCheck {
+  /** Opaque; pass it back to read the check's log. */
+  id: string;
+  name: string;
+  state: ForgeCheckState;
+  url: string | null;
+  /** Whether Nest can fetch this check's log. */
+  hasLog: boolean;
+}
+
+export type ForgePullState = 'open' | 'closed' | 'merged';
+
+export interface ForgePull {
+  number: number;
+  title: string;
+  state: ForgePullState;
+  draft: boolean;
+  author: string;
+  head: string;
+  base: string;
+  url: string;
+  /** ms since epoch. */
+  updatedAt: number;
+  /** Rolled up from the head commit's checks; null when it has none or they weren't read. */
+  checks: ForgeCheckState | null;
+  review: 'approved' | 'changes-requested' | null;
+}
+
+export interface ForgeComment {
+  id: string;
+  author: string;
+  body: string;
+  /** ms since epoch. */
+  createdAt: number;
+  /** For a comment on a line of the diff. */
+  path: string | null;
+  line: number | null;
+  url: string | null;
+  /** A review's verdict, for review summaries. */
+  review: 'approved' | 'changes-requested' | 'commented' | null;
+}
+
+export interface ForgePullDetail extends ForgePull {
+  body: string;
+  headSha: string | null;
+  checkList: ForgeCheck[];
+  comments: ForgeComment[];
+}
+
+export interface ForgePullDraft {
+  title: string;
+  body: string;
+  /** Branch to merge into; the repository's default branch when empty. */
+  base: string;
+  draft: boolean;
 }
 
 /** A phone or browser paired with this Nest for remote access. */

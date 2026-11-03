@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync, statSync, watch, type FSWatcher } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { GitBranch, GitDiff, GitStatus } from '@shared/types';
+import type { GitBranch, GitCommitDetail, GitDiff, GitIdentity, GitLogPage, GitStatus } from '@shared/types';
 import { whichAll } from '../providers/process';
-import { BRANCH_FORMAT, isCloneableUrl, isSafeRelativePath, parseBranches, parseRemotes, parseStatus, repoFolderName } from './parse';
+import { BRANCH_FORMAT, LOG_FORMAT, isCloneableUrl, isCommitHash, isSafeRelativePath, parseBranches, parseCommitFiles, parseLog, parseRefs, parseRemotes, parseStatus, repoFolderName } from './parse';
 
 const isWindows = process.platform === 'win32';
 const LOCAL_TIMEOUT_MS = 30_000;
@@ -15,6 +15,8 @@ const MAX_DIFF_CHARS = 400_000;
 /** Stop watching a repository nobody has asked about for this long. */
 const WATCH_IDLE_MS = 10 * 60_000;
 const WATCH_DEBOUNCE_MS = 400;
+/** Most commits one history page returns. */
+const MAX_LOG_PAGE = 500;
 
 /** A git failure, worded for the user. */
 export class GitError extends Error {}
@@ -380,6 +382,103 @@ export class GitService {
     if (remotes.includes('origin')) return 'origin';
     if (remotes.length === 1) return remotes[0];
     throw new GitError(`This repository has several remotes (${remotes.join(', ')}) and none is called origin. Push once from the terminal to choose.`);
+  }
+
+  // -------------------------------------------------------------------------
+  // History
+
+  /** A page of history across HEAD and every branch and tag, newest first in graph order. */
+  async log(folder: string, skip = 0, limit = 200): Promise<GitLogPage> {
+    const root = await this.requireRepo(folder);
+    const head = await this.run(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], { okCodes: [1] });
+    const refs = (await this.run(root, ['for-each-ref', '--count=1', '--format=%(refname)'])).stdout.trim();
+    // A fresh repository has nothing to show, and git log fails on it.
+    if (head.code !== 0 && !refs) return { commits: [], more: false };
+    const n = Math.min(Math.max(Math.round(limit), 1), MAX_LOG_PAGE);
+    const res = await this.run(root, [
+      'log',
+      '-z',
+      '--topo-order',
+      '--decorate=full',
+      `--format=${LOG_FORMAT}`,
+      `--skip=${Math.max(Math.round(skip), 0)}`,
+      `-n${n + 1}`,
+      '--branches',
+      '--remotes',
+      '--tags',
+      ...(head.code === 0 ? ['HEAD'] : []),
+      '--',
+    ]);
+    const commits = parseLog(res.stdout);
+    return { commits: commits.slice(0, n), more: commits.length > n };
+  }
+
+  /** One commit: its whole message and the files it changed (against its first parent, for a merge). */
+  async showCommit(folder: string, hash: string): Promise<GitCommitDetail> {
+    if (!isCommitHash(hash)) throw new GitError('That isn’t a commit.');
+    const root = await this.requireRepo(folder);
+    const sep = '%x1f';
+    const res = await this.run(root, ['show', '-s', '--decorate=full', `--format=${['%H', '%P', '%an', '%ae', '%at', '%cn', '%D', '%B'].join(sep)}`, hash, '--'], { okCodes: [128] });
+    if (res.code !== 0) throw new GitError(`There’s no commit ${hash.slice(0, 7)} in this repository.`);
+    const [full, parents, author, email, date, committer, decoration, ...message] = res.stdout.split('\x1f');
+    const parentList = parents ? parents.split(' ').filter(Boolean) : [];
+    const range = parentList.length ? [parentList[0], full] : ['--root', full];
+    const [names, nums] = await Promise.all([
+      this.run(root, ['diff-tree', '-r', '-M', '--no-commit-id', '--name-status', '-z', ...range, '--']),
+      this.run(root, ['diff-tree', '-r', '-M', '--no-commit-id', '--numstat', '-z', ...range, '--']),
+    ]);
+    const text = message.join('\x1f').replace(/\s+$/, '');
+    return {
+      hash: full,
+      parents: parentList,
+      author,
+      email,
+      committer,
+      date: Number(date) * 1000 || 0,
+      subject: text.split('\n')[0] ?? '',
+      message: text,
+      refs: parseRefs(decoration ?? ''),
+      files: parseCommitFiles(names.stdout, nums.stdout),
+    };
+  }
+
+  /** One file's change in a commit (against its first parent). */
+  async commitDiff(folder: string, hash: string, file: string): Promise<GitDiff> {
+    if (!isCommitHash(hash)) throw new GitError('That isn’t a commit.');
+    assertPath(file);
+    const detail = await this.showCommit(folder, hash);
+    const entry = detail.files.find((f) => f.path === file);
+    const paths = entry?.origPath ? [entry.origPath, file] : [file];
+    const range = detail.parents.length ? [detail.parents[0], detail.hash] : ['--root', detail.hash];
+    const root = await this.requireRepo(folder);
+    const res = await this.run(root, ['diff-tree', '-p', '-M', '--no-color', '--no-ext-diff', '--no-commit-id', ...range, '--', ...paths]);
+    const truncated = res.stdout.length > MAX_DIFF_CHARS;
+    const text = truncated ? res.stdout.slice(0, MAX_DIFF_CHARS) : res.stdout;
+    return { path: file, text, binary: /^Binary files /m.test(text), truncated };
+  }
+
+  // -------------------------------------------------------------------------
+  // Identity
+
+  /** Who commits are made as, from the global config. */
+  async identity(): Promise<GitIdentity> {
+    const get = async (key: string) => (await this.run(os.homedir(), ['config', '--global', '--get', key], { okCodes: [1] })).stdout.trim() || null;
+    const [name, email] = await Promise.all([get('user.name'), get('user.email')]);
+    return { name, email };
+  }
+
+  async setIdentity(identity: GitIdentity): Promise<GitIdentity> {
+    for (const [key, raw] of [
+      ['user.name', identity.name],
+      ['user.email', identity.email],
+    ] as const) {
+      const value = (raw ?? '').trim();
+      if (/[\r\n\0]/.test(value) || value.length > 200) throw new GitError('Names and emails must fit on one line.');
+      if (key === 'user.email' && value && !/^[^\s@<>]+@[^\s@<>]+$/.test(value)) throw new GitError('That doesn’t look like an email address.');
+      if (value) await this.run(os.homedir(), ['config', '--global', key, value]);
+      else await this.run(os.homedir(), ['config', '--global', '--unset', key], { okCodes: [5] });
+    }
+    return this.identity();
   }
 
   // -------------------------------------------------------------------------

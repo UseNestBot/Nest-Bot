@@ -16,8 +16,18 @@ import type {
   Attachment,
   Conversation,
   ConversationDetail,
+  ForgeAccount,
+  ForgeKind,
+  ForgeLookup,
+  ForgePull,
+  ForgePullDetail,
+  ForgePullDraft,
   GitBranch,
+  GitCommitDetail,
   GitDiff,
+  GitIdentity,
+  GitInfo,
+  GitLogPage,
   GitScope,
   GitStatus,
   Handoff,
@@ -187,6 +197,35 @@ export interface NestApi {
   gitPull(scope: GitScope): Promise<void>;
   /** Push the current branch, setting its upstream the first time. */
   gitPush(scope: GitScope): Promise<void>;
+  /** History across HEAD and every branch and tag, newest first in graph order. */
+  gitLog(scope: GitScope, skip: number, limit: number): Promise<GitLogPage>;
+  gitShowCommit(scope: GitScope, hash: string): Promise<GitCommitDetail>;
+  /** One file's change in a commit, against its first parent. */
+  gitCommitDiff(scope: GitScope, hash: string, path: string): Promise<GitDiff>;
+  /** The installed git and who it commits as. */
+  getGitInfo(): Promise<GitInfo>;
+  /** Set (or with empty values, unset) the global user.name and user.email. */
+  setGitIdentity(identity: GitIdentity): Promise<GitIdentity>;
+
+  // Forges (GitHub, GitLab, Forgejo). Tokens stay in the main process.
+  /** Known forge hosts and whether Nest can sign in to each; `force` checks again instead of using the last check. */
+  forgeAccounts(force: boolean): Promise<ForgeAccount[]>;
+  /** Add a self-hosted forge. */
+  forgeAddHost(host: string, kind: ForgeKind): Promise<ForgeAccount>;
+  forgeRemoveHost(host: string): Promise<void>;
+  /** Check a pasted token, then save it encrypted. It's used ahead of CLI and credential-helper sign-ins. */
+  forgeSetToken(host: string, token: string): Promise<ForgeAccount>;
+  forgeClearToken(host: string): Promise<ForgeAccount>;
+  /** The forge repository behind the working folder, and the current branch's open pull request. */
+  forgeLookup(scope: GitScope): Promise<ForgeLookup>;
+  forgeListPulls(scope: GitScope, state: 'open' | 'closed' | 'all'): Promise<ForgePull[]>;
+  /** A pull request with its checks, reviews and comments. */
+  forgeGetPull(scope: GitScope, number: number): Promise<ForgePullDetail>;
+  /** The end of a check's log (GitHub Actions and GitLab CI). */
+  forgeCheckLog(scope: GitScope, checkId: string): Promise<string>;
+  /** Open a pull request for the current branch, pushing it first when needed. */
+  forgeCreatePull(scope: GitScope, draft: ForgePullDraft): Promise<ForgePull>;
+  forgeComment(scope: GitScope, number: number, body: string): Promise<void>;
 
   // Updates (GitHub releases, installed silently by the NSIS installer)
   getUpdateState(): Promise<UpdateState>;
@@ -291,6 +330,22 @@ export const API_METHODS = [
   'gitFetch',
   'gitPull',
   'gitPush',
+  'gitLog',
+  'gitShowCommit',
+  'gitCommitDiff',
+  'getGitInfo',
+  'setGitIdentity',
+  'forgeAccounts',
+  'forgeAddHost',
+  'forgeRemoveHost',
+  'forgeSetToken',
+  'forgeClearToken',
+  'forgeLookup',
+  'forgeListPulls',
+  'forgeGetPull',
+  'forgeCheckLog',
+  'forgeCreatePull',
+  'forgeComment',
   'getUpdateState',
   'checkForUpdates',
   'installUpdate',

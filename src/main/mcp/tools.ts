@@ -1,7 +1,7 @@
 import { describeCadence, sanitizeCadence } from '@shared/schedule';
 import { AVATAR_PALETTE } from '@shared/templates';
 import path from 'node:path';
-import { DEFAULT_PERMISSIONS, PROVIDER_LABEL, PROVIDERS, isProviderId, type Project, type ProviderId } from '@shared/types';
+import { DEFAULT_PERMISSIONS, FORGE_LABEL, PROVIDER_LABEL, PROVIDERS, isProviderId, type ForgeLookup, type ForgePull, type ForgePullDetail, type ForgePullDraft, type GitDraft, type Project, type ProviderId } from '@shared/types';
 import type { NestDb } from '../db';
 import type { RunManager } from '../runs';
 import type { Scheduler } from '../scheduler';
@@ -35,6 +35,16 @@ export interface TerminalTools {
   run(conversationId: string, command: string, timeoutMs: number, who: string): Promise<{ text: string; ok: boolean }>;
   read(conversationId: string, lines: number): string;
   sendKeys(conversationId: string, keys: string): string;
+}
+
+/** Forges for a chat's working folder, as the tools see them (implemented by ForgeService). */
+export interface ForgeTools {
+  lookup(folder: string): Promise<ForgeLookup>;
+  listPulls(folder: string, state: 'open' | 'closed' | 'all'): Promise<ForgePull[]>;
+  getPull(folder: string, number: number): Promise<ForgePullDetail>;
+  checkLog(folder: string, checkId: string): Promise<string>;
+  createPull(folder: string, draft: ForgePullDraft): Promise<ForgePull>;
+  comment(folder: string, number: number, body: string): Promise<void>;
 }
 
 const MAX_DELEGATION_DEPTH = 3;
@@ -266,6 +276,93 @@ export const TERMINAL_TOOL_DEFS: ToolDef[] = [
   },
 ];
 
+/** Git and forge tools: drafts go to the user's source control panel; opening and commenting ask first. */
+export const GIT_TOOL_DEFS: ToolDef[] = [
+  {
+    name: 'draft_commit_message',
+    description:
+      'Put a commit message in the commit box of this chat’s source control panel for the user to review and commit. Use it when the user asks you to write a commit message. It doesn’t commit anything.',
+    inputSchema: obj({ message: { type: 'string', description: 'Subject line (under about 72 characters), then a blank line and an optional body.' } }, ['message']),
+  },
+  {
+    name: 'draft_pull_request',
+    description:
+      'Open the “Create pull request” form in this chat’s source control panel, filled in with your title and description, for the user to review and submit. Use it when the user asks you to write a pull request. It doesn’t push or open anything.',
+    inputSchema: obj(
+      {
+        title: { type: 'string' },
+        body: { type: 'string', description: 'The description, in Markdown.' },
+        base: { type: 'string', description: 'Branch to merge into; default the repository’s default branch.' },
+      },
+      ['title', 'body'],
+    ),
+  },
+  {
+    name: 'list_pull_requests',
+    description: 'List pull requests (merge requests on GitLab) for the repository in your working folder, on GitHub, GitLab or Forgejo, with their checks and review state.',
+    inputSchema: obj({ state: { type: 'string', enum: ['open', 'closed', 'all'], description: 'Default open.' } }),
+  },
+  {
+    name: 'get_pull_request',
+    description: 'Read a pull request: its description, each check (with ids for get_check_log), reviews and comments, including comments on lines of the diff. Without a number, the current branch’s open pull request.',
+    inputSchema: obj({ number: { type: 'integer' } }),
+  },
+  {
+    name: 'get_check_log',
+    description: 'Read the end of a check’s log (GitHub Actions or GitLab CI), to see why it failed. Get check ids from get_pull_request.',
+    inputSchema: obj({ check_id: { type: 'string' } }, ['check_id']),
+  },
+  {
+    name: 'create_pull_request',
+    description:
+      'Open a pull request for the current branch, pushing it first if the forge doesn’t have all of it. The user approves it first. Prefer draft_pull_request when the user may want to edit it.',
+    inputSchema: obj(
+      {
+        title: { type: 'string' },
+        body: { type: 'string', description: 'The description, in Markdown.' },
+        base: { type: 'string', description: 'Branch to merge into; default the repository’s default branch.' },
+        draft: { type: 'boolean', description: 'Open it as a draft.' },
+      },
+      ['title', 'body'],
+    ),
+  },
+  {
+    name: 'comment_on_pull_request',
+    description: 'Post a comment on a pull request, as the user. The user approves it first.',
+    inputSchema: obj({ number: { type: 'integer' }, body: { type: 'string', description: 'Markdown.' } }, ['number', 'body']),
+  },
+];
+
+const GIT_TOOL_NAMES = new Set(GIT_TOOL_DEFS.map((t) => t.name));
+/** Most of a pull request's text handed to an agent at once. */
+const MAX_PULL_TEXT = 40_000;
+
+/** A pull request as text for an agent. */
+export function describePull(pr: ForgePullDetail): string {
+  const lines = [
+    `#${pr.number} ${pr.title} (${pr.state}${pr.draft ? ', draft' : ''}) by ${pr.author}: ${pr.head} → ${pr.base}`,
+    pr.url,
+    `Checks: ${pr.checks ?? 'none'}${pr.review ? ` · Review: ${pr.review}` : ''}`,
+  ];
+  for (const c of pr.checkList) lines.push(`- [${c.state}] ${c.name} (id: ${c.id}${c.hasLog ? ', log available' : ''})${c.url ? ` ${c.url}` : ''}`);
+  lines.push('', 'Description:', pr.body.trim() || '(none)');
+  if (pr.comments.length) {
+    lines.push('', 'Reviews and comments, oldest first:');
+    for (const c of pr.comments) {
+      const where = c.path ? ` on ${c.path}${c.line ? `:${c.line}` : ''}` : '';
+      const verdict = c.review === 'approved' ? ' (approved)' : c.review === 'changes-requested' ? ' (requested changes)' : '';
+      lines.push(`- ${c.author}${verdict}${where}: ${c.body.trim() || '(no text)'}`);
+    }
+  }
+  const text = lines.join('\n');
+  return text.length > MAX_PULL_TEXT ? `${text.slice(0, MAX_PULL_TEXT)}\n…(cut; open the pull request for the rest)` : text;
+}
+
+function describePullLine(p: ForgePull): string {
+  const extra = [p.draft && 'draft', p.checks && `checks ${p.checks}`, p.review].filter(Boolean).join(', ');
+  return `#${p.number} ${p.title} [${p.state}${extra ? `; ${extra}` : ''}] ${p.head} → ${p.base} by ${p.author} ${p.url}`;
+}
+
 /**
  * Special keys by name. Agents can't reliably send control characters through
  * a tool call (they arrive empty), so Ctrl-C and friends are named instead.
@@ -302,6 +399,8 @@ export class NestTools {
     private readonly browser?: { host: BrowserTools; enabledFor: (agentId: string) => boolean },
     /** The shared terminal and which agents may use it (opt-in per agent); absent in tests. */
     private readonly terminal?: { host: TerminalTools; enabledFor: (agentId: string) => boolean },
+    /** Forges, and where drafts for the source control panel go; absent in tests. */
+    private readonly git?: { forge: ForgeTools; onDraft: (conversationId: string, draft: GitDraft) => void },
   ) {}
 
   /** Tools this conversation's agent may see: browser tools only when its Browser is set to the Nest browser. */
@@ -309,7 +408,7 @@ export class NestTools {
     const agentId = this.db.getConversation(conversationId)?.agentId;
     const browser = Boolean(agentId && this.browser?.enabledFor(agentId));
     const terminal = Boolean(agentId && this.terminal?.enabledFor(agentId));
-    return [...TOOL_DEFS, ...(browser ? BROWSER_TOOL_DEFS : []), ...(terminal ? TERMINAL_TOOL_DEFS : [])];
+    return [...TOOL_DEFS, ...(this.git ? GIT_TOOL_DEFS : []), ...(browser ? BROWSER_TOOL_DEFS : []), ...(terminal ? TERMINAL_TOOL_DEFS : [])];
   }
 
   private async terminalCall(conversationId: string, agentId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -350,6 +449,91 @@ export class NestTools {
       }
     } catch (err) {
       return { ok: false, text: `Terminal error: ${(err as Error).message}` };
+    }
+  }
+
+  private async gitCall(conversationId: string, agentName: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    const git = this.git;
+    if (!git) return { ok: false, text: 'Git tools aren’t available in this Nest.' };
+    const conversation = this.db.getConversation(conversationId)!;
+    const folder = this.runs.workspaceFor(conversation);
+    const str = (k: string, max: number) => (typeof args[k] === 'string' ? (args[k] as string).slice(0, max) : '');
+    const num = Number(args.number);
+    try {
+      switch (name) {
+        case 'draft_commit_message': {
+          const message = str('message', 20_000).trim();
+          if (!message) return { ok: false, text: 'message is required.' };
+          git.onDraft(conversationId, { kind: 'commit', message });
+          return { ok: true, text: 'The message is in the commit box of the source control panel. The user reviews it and commits.' };
+        }
+        case 'draft_pull_request': {
+          const title = str('title', 256).trim();
+          if (!title) return { ok: false, text: 'title is required.' };
+          git.onDraft(conversationId, { kind: 'pull-request', title, body: str('body', 65_000), base: str('base', 250).trim() || null });
+          return { ok: true, text: 'The pull request form is open in the source control panel with your title and description. The user reviews it and opens it.' };
+        }
+        case 'list_pull_requests': {
+          const state = args.state === 'closed' || args.state === 'all' ? args.state : 'open';
+          const pulls = await git.forge.listPulls(folder, state);
+          return { ok: true, text: pulls.length ? pulls.map(describePullLine).join('\n') : `No ${state === 'all' ? '' : `${state} `}pull requests.` };
+        }
+        case 'get_pull_request': {
+          let n = Number.isInteger(num) && num > 0 ? num : null;
+          if (n === null) {
+            const found = await git.forge.lookup(folder);
+            if (found.error) return { ok: false, text: found.error };
+            n = found.repo?.current?.number ?? null;
+            if (n === null) return { ok: false, text: found.repo ? 'The current branch has no open pull request. Pass number to read another.' : 'This folder’s repository has no remote on a forge Nest knows.' };
+          }
+          return { ok: true, text: describePull(await git.forge.getPull(folder, n)) };
+        }
+        case 'get_check_log': {
+          const id = str('check_id', 200).trim();
+          if (!id) return { ok: false, text: 'check_id is required (from get_pull_request).' };
+          return { ok: true, text: (await git.forge.checkLog(folder, id)) || '(The log is empty.)' };
+        }
+        case 'create_pull_request': {
+          const title = str('title', 256).trim();
+          if (!title) return { ok: false, text: 'title is required.' };
+          const body = str('body', 65_000);
+          const base = str('base', 250).trim();
+          const found = await git.forge.lookup(folder);
+          const where = found.repo ? `${FORGE_LABEL[found.repo.kind]} · ${found.repo.path}` : null;
+          const choice = await this.runs.requestLocalApproval(
+            conversationId,
+            {
+              title: `${agentName} wants to open a pull request`,
+              action: title,
+              target: where ? `${where}${base || found.repo?.defaultBranch ? ` → ${base || found.repo?.defaultBranch}` : ''}` : null,
+              reason: null,
+              detail: body.trim() ? body.slice(0, 4000) : null,
+              approveLabel: args.draft === true ? 'Open draft' : 'Open pull request',
+            },
+            true,
+          );
+          if (choice !== 'allow') return { ok: false, text: 'The user declined opening this pull request.' };
+          const pull = await git.forge.createPull(folder, { title, body, base, draft: args.draft === true });
+          return { ok: true, text: `Opened #${pull.number}: ${pull.url}` };
+        }
+        case 'comment_on_pull_request': {
+          if (!Number.isInteger(num) || num < 1) return { ok: false, text: 'number is required.' };
+          const body = str('body', 65_000);
+          if (!body.trim()) return { ok: false, text: 'body is required.' };
+          const choice = await this.runs.requestLocalApproval(
+            conversationId,
+            { title: `${agentName} wants to comment on pull request #${num}`, action: body.slice(0, 4000), target: null, reason: null, detail: null, approveLabel: 'Post comment' },
+            true,
+          );
+          if (choice !== 'allow') return { ok: false, text: 'The user declined posting this comment.' };
+          await git.forge.comment(folder, num, body);
+          return { ok: true, text: `Commented on #${num}.` };
+        }
+        default:
+          return { ok: false, text: `Unknown git tool: ${name}` };
+      }
+    } catch (err) {
+      return { ok: false, text: (err as Error).message };
     }
   }
 
@@ -400,6 +584,7 @@ export class NestTools {
     if (!conversation || !me) return { ok: false, text: 'This conversation no longer exists in Nest.' };
     if (name.startsWith('browser_')) return this.browserCall(conversationId, me.id, me.name, name, args);
     if (name.startsWith('terminal_')) return this.terminalCall(conversationId, me.id, me.name, name, args);
+    if (GIT_TOOL_NAMES.has(name)) return this.gitCall(conversationId, me.name, name, args);
     const str = (k: string, max = 20000) => (typeof args[k] === 'string' ? (args[k] as string).trim().slice(0, max) : '');
 
     switch (name) {

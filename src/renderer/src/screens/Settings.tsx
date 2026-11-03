@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Archive, Blocks, Bot, Brain, Check, Copy, Database, ExternalLink, FolderOpen, Info, Keyboard, LogIn, LogOut, MessageSquare, Mic, Palette, Plug, RefreshCw, Settings2, ShieldCheck, Smartphone } from 'lucide-react';
+import { Archive, Blocks, Bot, Brain, Check, Copy, Database, ExternalLink, FolderOpen, GitBranch, Info, Keyboard, LogIn, LogOut, MessageSquare, Mic, Palette, Plug, RefreshCw, Settings2, ShieldCheck, Smartphone } from 'lucide-react';
 import { DICTATION_MODELS, type DictationModelStatus } from '@shared/dictation';
 import {
   API_PROVIDERS,
   CLI_PROVIDERS,
   DEFAULT_SETTINGS,
+  FORGE_LABEL,
+  FORGE_SOURCE_LABEL,
   PROVIDER_LABEL,
   UI_SCALE_MAX,
   UI_SCALE_MIN,
@@ -22,6 +24,9 @@ import {
   type CodexSandboxMode,
   type Connector,
   type ConnectorInventory,
+  type ForgeAccount,
+  type ForgeKind,
+  type GitInfo,
   type LoginStart,
   type NotifyOn,
   type ProviderId,
@@ -35,6 +40,7 @@ import { formatBytes, relativeTime, statusLabel } from '../format';
 import { useStore, type SettingsSection } from '../store';
 import { UpdateStatus } from '../components/Update';
 import { RELEASE_CHANNEL, versionLabel } from '@shared/build';
+import { CLI_SIGN_IN, TOKEN_SCOPES, tokenPageUrl } from '@shared/forge';
 import { Button, Segmented, Select, Toggle, Tooltip, cx, inputClass } from '../components/ui';
 import { dictationEngine, useModelDownload } from '../dictation/dictation';
 import { confirmDialog } from '../components/confirm';
@@ -57,6 +63,7 @@ const SECTIONS: Array<{ id: SettingsSection; label: string; icon: typeof Setting
   { id: 'conversations', label: 'Conversations', icon: MessageSquare },
   { id: 'voice', label: 'Voice', icon: Mic },
   { id: 'providers', label: 'Providers', icon: Plug },
+  { id: 'git', label: 'Git & forges', icon: GitBranch },
   { id: 'permissions', label: 'Permissions', icon: ShieldCheck },
   { id: 'memory', label: 'Memory & context', icon: Brain },
   { id: 'remote', label: 'Remote access', icon: Smartphone },
@@ -66,7 +73,7 @@ const SECTIONS: Array<{ id: SettingsSection; label: string; icon: typeof Setting
   { id: 'about', label: 'About', icon: Info },
 ].filter(({ id }) =>
   // On a phone: no PC-only sections (dictation, shortcuts, storage, pairing other devices).
-  IS_REMOTE ? !['voice', 'shortcuts', 'data', 'remote'].includes(id) : id !== 'device',
+  IS_REMOTE ? !['voice', 'shortcuts', 'data', 'remote', 'git'].includes(id) : id !== 'device',
 ) as Array<{ id: SettingsSection; label: string; icon: typeof Settings2 }>;
 
 export function SettingsScreen({ section }: { section: SettingsSection }) {
@@ -124,6 +131,7 @@ export function SettingsScreen({ section }: { section: SettingsSection }) {
             {section === 'conversations' && <Conversations />}
             {section === 'voice' && <Voice />}
             {section === 'providers' && <Providers />}
+            {section === 'git' && <GitForges />}
             {section === 'permissions' && <Permissions />}
             {section === 'memory' && <MemoryContext info={info} />}
             {section === 'remote' && <RemoteAccess />}
@@ -456,6 +464,9 @@ const TOOL_LIST: Array<[string, string]> = [
   ['update_my_instructions', 'Propose changes to its own instructions. You approve it first.'],
   ['update_agent', 'Change another agent’s instructions, model or permissions. You approve it first.'],
   ['ask_permission', 'Ask you before a seriously consequential action, even when permissions are skipped.'],
+  ['draft_commit_message · draft_pull_request', 'Fill in the commit box or pull request form in the source control panel, for you to review.'],
+  ['list_pull_requests · get_pull_request · get_check_log', 'Read pull requests, their checks and logs, reviews and comments on GitHub, GitLab or Forgejo.'],
+  ['create_pull_request · comment_on_pull_request', 'Open a pull request or post a comment as you. You approve it first, even when permissions are skipped.'],
 ];
 
 function AgentTools() {
@@ -981,6 +992,226 @@ function ProviderGroup({ provider, status }: { provider: CliProviderId; status?:
         </div>
       </Row>
       {status?.detail && <pre className="whitespace-pre-wrap px-4 py-3 font-mono text-[11.5px] text-ink-2">{status.detail}</pre>}
+    </Group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Git & forges
+
+function GitForges() {
+  const { attempt } = useStore();
+  const [info, setInfo] = useState<GitInfo | null>(null);
+  const [accounts, setAccounts] = useState<ForgeAccount[] | null>(null);
+  const [checking, setChecking] = useState(false);
+  const loadAccounts = useCallback((force: boolean) => {
+    setChecking(true);
+    void api
+      .forgeAccounts(force)
+      .then(setAccounts)
+      .catch(() => setAccounts([]))
+      .finally(() => setChecking(false));
+  }, []);
+  useEffect(() => {
+    void api.getGitInfo().then(setInfo).catch(() => setInfo({ version: null, identity: { name: null, email: null } }));
+    loadAccounts(false);
+  }, [loadAccounts]);
+  useEffect(() => api.onEvent((e) => e.type === 'forges-changed' && loadAccounts(false)), [loadAccounts]);
+  const replace = (a: ForgeAccount) => setAccounts((list) => (list ?? []).map((x) => (x.host === a.host ? a : x)));
+
+  return (
+    <>
+      <Title subtitle="Nest runs your own git, so your config, credential helpers, SSH keys, hooks and signing all apply. Open a chat’s source control panel from the branch icon in its header.">Git & forges</Title>
+      <Group title="Git">
+        <Row label="Git" description={info === null ? 'Checking…' : info.version ? `Version ${info.version}` : 'Not installed, or not on PATH.'}>
+          {info && !info.version && (
+            <Button variant="ghost" onClick={() => void api.openExternal('https://git-scm.com/downloads')}>
+              Install git <ExternalLink size={12} />
+            </Button>
+          )}
+        </Row>
+        {info?.version && <IdentityRow info={info} onSaved={(identity) => setInfo({ ...info, identity })} attempt={attempt} />}
+      </Group>
+      <Group
+        title="Forges"
+        footer={
+          <>
+            Pull requests, checks and reviews on GitHub, GitLab and Forgejo (including Codeberg and Gitea). Nest signs in with what you already use: a token you saved here first, then the forge’s CLI ({CLI_SIGN_IN.github}, {CLI_SIGN_IN.gitlab}, {CLI_SIGN_IN.forgejo}), then git’s credential helper. Saved tokens are encrypted with {KEY_PROTECTION} in Nest’s data folder and never shown again.
+          </>
+        }
+      >
+        <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+          <span className="text-[12.5px] text-muted">{checking ? 'Checking sign-ins…' : accounts ? `${accounts.filter((a) => a.state === 'ready').length} of ${accounts.length} signed in` : ''}</span>
+          <Button size="sm" variant="ghost" disabled={checking} onClick={() => loadAccounts(true)}>
+            <RefreshCw size={13} className={cx(checking && 'animate-spin')} /> Check again
+          </Button>
+        </div>
+        {accounts?.map((a) => (
+          <ForgeRow key={a.host} account={a} onChanged={replace} onRemoved={() => setAccounts((list) => (list ?? []).filter((x) => x.host !== a.host))} attempt={attempt} />
+        ))}
+      </Group>
+      <AddForge onAdded={(a) => setAccounts((list) => [...(list ?? []).filter((x) => x.host !== a.host), a])} attempt={attempt} />
+    </>
+  );
+}
+
+function IdentityRow({ info, onSaved, attempt }: { info: GitInfo; onSaved: (i: GitInfo['identity']) => void; attempt: <T>(fn: () => Promise<T>) => Promise<T | undefined> }) {
+  const [name, setName] = useState(info.identity.name ?? '');
+  const [email, setEmail] = useState(info.identity.email ?? '');
+  const [saving, setSaving] = useState(false);
+  const changed = name.trim() !== (info.identity.name ?? '') || email.trim() !== (info.identity.email ?? '');
+  const missing = !info.identity.name || !info.identity.email;
+  return (
+    <Row
+      label="Commit as"
+      description={missing ? <span className="text-warn-ink">Git needs a name and email before it can commit.</span> : 'Your global git user.name and user.email, used by every repository that doesn’t set its own.'}
+      stacked
+    >
+      <div className="flex gap-2 max-[640px]:flex-col">
+        <input className={inputClass} value={name} placeholder="Your Name" onChange={(e) => setName(e.target.value)} />
+        <input className={inputClass} value={email} placeholder="you@example.com" onChange={(e) => setEmail(e.target.value)} />
+        <Button
+          disabled={!changed || saving}
+          onClick={async () => {
+            setSaving(true);
+            const res = await attempt(() => api.setGitIdentity({ name: name.trim() || null, email: email.trim() || null }));
+            setSaving(false);
+            if (res) onSaved(res);
+          }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+    </Row>
+  );
+}
+
+function forgeStatus(a: ForgeAccount): ReactNode {
+  if (a.state === 'ready') return `Signed in as ${a.user} with the ${a.source ? FORGE_SOURCE_LABEL[a.source] : 'saved token'}.`;
+  if (a.state === 'error') return <span className="text-warn-ink">{a.error}</span>;
+  return `Not signed in. Run ${CLI_SIGN_IN[a.kind]} in a terminal, or paste a token.`;
+}
+
+function ForgeRow({ account: a, onChanged, onRemoved, attempt }: { account: ForgeAccount; onChanged: (a: ForgeAccount) => void; onRemoved: () => void; attempt: <T>(fn: () => Promise<T>) => Promise<T | undefined> }) {
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const showInput = editing || a.state !== 'ready';
+  return (
+    <Row
+      label={
+        <span className="inline-flex flex-wrap items-center gap-2">
+          {a.host}
+          <span className="text-[11.5px] font-normal text-muted">{FORGE_LABEL[a.kind]}</span>
+          {a.savedHint && <span className="font-mono text-[11.5px] font-normal text-muted">{a.savedHint}</span>}
+          {a.state === 'ready' && <Check size={13} className="text-ok" />}
+        </span>
+      }
+      description={forgeStatus(a)}
+      stacked
+    >
+      <div className="flex flex-wrap gap-2">
+        {showInput && (
+          <>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={a.savedHint ? 'Paste a new token to replace it' : 'Paste a personal access token'}
+              className={cx(inputClass, 'min-w-[220px] flex-1 font-mono text-[12px]')}
+            />
+            <Button
+              disabled={!draft.trim() || saving}
+              onClick={async () => {
+                setSaving(true);
+                const res = await attempt(() => api.forgeSetToken(a.host, draft));
+                setSaving(false);
+                if (res) {
+                  setDraft('');
+                  setEditing(false);
+                  onChanged(res);
+                }
+              }}
+            >
+              {saving ? 'Checking…' : 'Save'}
+            </Button>
+            <Tooltip label={TOKEN_SCOPES[a.kind]}>
+              <Button variant="ghost" onClick={() => void api.openExternal(tokenPageUrl(a.kind, a.host))}>
+                Create a token <ExternalLink size={12} />
+              </Button>
+            </Tooltip>
+          </>
+        )}
+        {!showInput && (
+          <Button variant="ghost" onClick={() => setEditing(true)}>
+            Use a token instead
+          </Button>
+        )}
+        {a.savedHint && (
+          <Button
+            variant="danger"
+            onClick={async () => {
+              if (!(await confirmDialog({ title: `Remove the saved token for ${a.host}?`, message: 'Nest forgets the token and goes back to your CLI or credential helper sign-in, if you have one.', confirmLabel: 'Remove token', tone: 'danger' }))) return;
+              const res = await attempt(() => api.forgeClearToken(a.host));
+              if (res) onChanged(res);
+            }}
+          >
+            Remove token
+          </Button>
+        )}
+        {a.custom && (
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              if (!(await confirmDialog({ title: `Remove ${a.host}?`, message: 'Nest forgets this forge and any token saved for it.', confirmLabel: 'Remove', tone: 'danger' }))) return;
+              if (await attempt(() => api.forgeRemoveHost(a.host).then(() => true))) onRemoved();
+            }}
+          >
+            Remove forge
+          </Button>
+        )}
+      </div>
+    </Row>
+  );
+}
+
+function AddForge({ onAdded, attempt }: { onAdded: (a: ForgeAccount) => void; attempt: <T>(fn: () => Promise<T>) => Promise<T | undefined> }) {
+  const [host, setHost] = useState('');
+  const [kind, setKind] = useState<ForgeKind>('gitlab');
+  const [adding, setAdding] = useState(false);
+  return (
+    <Group title="Self-hosted forge" footer="For a GitLab, Forgejo or Gitea server, or GitHub Enterprise, that Nest can’t recognise from its name.">
+      <Row label="Add a forge" stacked>
+        <div className="flex gap-2 max-[640px]:flex-col">
+          <input className={inputClass} value={host} placeholder="git.example.com" onChange={(e) => setHost(e.target.value)} />
+          <Select<ForgeKind>
+            label="Kind of forge"
+            value={kind}
+            onChange={setKind}
+            options={[
+              { value: 'gitlab', label: 'GitLab' },
+              { value: 'forgejo', label: 'Forgejo / Gitea' },
+              { value: 'github', label: 'GitHub Enterprise' },
+            ]}
+          />
+          <Button
+            disabled={!host.trim() || adding}
+            onClick={async () => {
+              setAdding(true);
+              const res = await attempt(() => api.forgeAddHost(host, kind));
+              setAdding(false);
+              if (res) {
+                setHost('');
+                onAdded(res);
+              }
+            }}
+          >
+            {adding ? 'Checking…' : 'Add'}
+          </Button>
+        </div>
+      </Row>
     </Group>
   );
 }
